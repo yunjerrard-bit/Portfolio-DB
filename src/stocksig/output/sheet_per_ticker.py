@@ -26,29 +26,40 @@ from stocksig.compute.color_rules import (
 _EMA_VALUE_RE = re.compile(r"^EMA_Close_\d+$")
 
 # --- 컬럼 레이아웃 상수 (gap-fix 01-07) ----------------------------------
-_OHLCV = ["Close", "High", "Low", "Volume"]
 _PRICES = ["Close", "High", "Low"]
 _EMA_PERIODS = [11, 22, 96, 192]
 
 _PRICE_KR = {"Close": "종가", "High": "고가", "Low": "저가", "Volume": "거래량"}
 
-_VOLUME_COLS = {"Volume", "Volume_median", "Volume_std"}
+_VOLUME_COLS = {"Volume"}
 _PERCENT_LITERAL_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
+# gap-fix 01-13: percent_ratio 컬럼 (Close_pct_change + Volume_pct_change(+_median/_std))
+_PERCENT_RATIO_COLS = {
+    "Close_pct_change",
+    "Volume_pct_change",
+    "Volume_pct_change_median",
+    "Volume_pct_change_std",
+}
 
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
-    """68 컬럼 이름 list 반환 (gap-fix 01-07/01-11/01-12).
+    """70 컬럼 이름 list 반환 (gap-fix 01-07/01-11/01-12/01-13).
 
-    구조: Date + (4 OHLCV × 3) + (4 EMA_Close × 4) + (12 DIFF × 3)
-        + (Stoch_%K, Stoch_%D, RSI)
-    = 1 + 12 + 16 + 36 + 3 = 68
+    구조: Date + (3 prices × 3) + Close_pct_change + Volume + Volume_pct_change(+_median/_std)
+        + (4 EMA_Close × 4) + (12 DIFF × 3) + (Stoch_%K, Stoch_%D, RSI)
+    = 1 + 9 + 1 + 1 + 3 + 16 + 36 + 3 = 70
 
-    (gap-fix 01-12: dailychg 그룹 4 × 3 = 12 컬럼 제거 — trend가 대체.)
+    (gap-fix 01-13: Volume_median/_std 제거, Close_pct_change + Volume_pct_change(+_median/_std) 추가.)
     """
     layout: list[str] = ["Date"]
-    # 원천 OHLCV (group 1) — 4 × 3 = 12
-    for col in _OHLCV:
+    # OHLCV 가격 그룹 (Close/High/Low) — 3 × 3 = 9
+    for col in ["Close", "High", "Low"]:
         layout += [col, f"{col}_median", f"{col}_std"]
+    # Close_pct_change (단일, median/std 없음)
+    layout.append("Close_pct_change")
+    # Volume (값) + Volume_pct_change + 그 median/std
+    layout.append("Volume")
+    layout += ["Volume_pct_change", "Volume_pct_change_median", "Volume_pct_change_std"]
     # 1차 EMA — Close만 (group 2) — 4 × 4 = 16 (gap-fix 01-11: + trend)
     for n in _EMA_PERIODS:
         base = f"EMA_Close_{n}"
@@ -74,6 +85,12 @@ def korean_header(col: str) -> str:
         return "Stoch %D"
     if col == "RSI":
         return "RSI"
+
+    # gap-fix 01-13: pct_change 컬럼 (단독)
+    if col == "Close_pct_change":
+        return "종가 등락률"
+    if col == "Volume_pct_change":
+        return "거래량 등락률"
 
     # *_median / *_std suffix 처리
     if col.endswith("_median"):
@@ -125,6 +142,9 @@ def column_num_format(col_name: str) -> str:
         return "volume"
     if col_name in _PERCENT_LITERAL_COLS:
         return "percent_literal"
+    # gap-fix 01-13: Close_pct_change + Volume_pct_change(+_median/_std) 모두 비율
+    if col_name in _PERCENT_RATIO_COLS:
+        return "percent_ratio"
     # DIFF 계열 — DIFF_, DIFF_*_median, DIFF_*_std 모두 비율
     if col_name.startswith("DIFF_"):
         return "percent_ratio"
@@ -214,6 +234,21 @@ def write_sheet_for_ticker(
             elif col_name.endswith("_trend"):
                 # gap-fix 01-11: EMA pct_change → 양수 green / 음수 red
                 bucket = decide_trend_bucket(value)
+            elif col_name == "Close_pct_change":
+                # gap-fix 01-13: trend bucket (sign-based)
+                bucket = decide_trend_bucket(value)
+            elif col_name == "Volume":
+                # gap-fix 01-13: Volume 셀 색은 Volume_pct_change 부호 기반 (trend)
+                vpc = row.get("Volume_pct_change")
+                if vpc is None or pd.isna(vpc):
+                    bucket = TechBucket.DEFAULT
+                else:
+                    bucket = decide_trend_bucket(vpc)
+            elif col_name == "Volume_pct_change":
+                # gap-fix 01-13: sigma bucket (4단 ±σ)
+                med = row.get("Volume_pct_change_median")
+                std = row.get("Volume_pct_change_std")
+                bucket = decide_sigma_bucket(value, med, std)
             elif col_name.endswith(("_median", "_std")):
                 bucket = SigmaBucket.DEFAULT
             else:
