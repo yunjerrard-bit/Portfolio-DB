@@ -46,8 +46,9 @@ def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
         base = f"EMA_Close_{n}"
         layout += [base, f"{base}_median", f"{base}_std"]
     # 2차 DIFF — Close/High/Low × N, 모두 EMA_Close_N 기준 (group 3) — 12 × 3 = 36
-    for price in _PRICES:
-        for n in _EMA_PERIODS:
+    # gap-fix 01-09: EMA period 외부, price 내부 → period로 그룹핑된 순서
+    for n in _EMA_PERIODS:
+        for price in _PRICES:
             base = f"DIFF_{price}_{n}"
             layout += [base, f"{base}_median", f"{base}_std"]
     # 2차 EMA_Close 일변동 (group 4) — 4 × 3 = 12
