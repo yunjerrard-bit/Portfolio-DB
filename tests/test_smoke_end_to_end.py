@@ -81,8 +81,15 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     # SHEET-02: A1 == ticker
     assert ws["A1"].value == "AAPL"
 
-    # 컬럼 폭: 124 (Date + (4 OHLCV × 3) + (12 EMA × 3) + (12 DIFF × 3) + (12 dailychg × 3) + 3 tech)
-    assert ws.max_column == 124, f"시트 폭은 124여야 한다 (현재: {ws.max_column})"
+    # 컬럼 폭: 76 (gap-fix 01-07: Date + 12 OHLCV + 12 EMA_Close + 36 DIFF + 12 dailychg + 3 tech)
+    assert ws.max_column == 76, f"시트 폭은 76여야 한다 (현재: {ws.max_column})"
+
+    # gap-fix 01-07: 신규 한국어 헤더 검증
+    layout = build_column_layout()
+    diff_high_11_col = layout.index("DIFF_High_11") + 1
+    assert ws.cell(row=5, column=diff_high_11_col).value == "고가-EMA11 차이"
+    ema_close_11_col = layout.index("EMA_Close_11") + 1
+    assert ws.cell(row=5, column=ema_close_11_col).value == "종가 EMA11"
 
     # SHEET-03: row 3 — Close 위치(col B, index 2) — 스칼라 median 존재
     assert ws.cell(row=3, column=2).value is not None
@@ -202,18 +209,21 @@ def test_num_format_baked(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp
     ws = wb["AAPL"]
 
     layout = build_column_layout()
-    close_col = layout.index("Close") + 1  # 2
-    volume_col = layout.index("Volume") + 1  # 11
-    rsi_col = layout.index("RSI") + 1  # 124
+    close_col = layout.index("Close") + 1
+    volume_col = layout.index("Volume") + 1
+    rsi_col = layout.index("RSI") + 1  # gap-fix 01-07: 새 위치 (76번째)
+    diff_close_11_col = layout.index("DIFF_Close_11") + 1  # gap-fix 01-07: percent_ratio
 
     # 데이터 첫 행 = row 6 (내림차순 최신)
     close_cell = ws.cell(row=6, column=close_col)
     volume_cell = ws.cell(row=6, column=volume_col)
     rsi_cell = ws.cell(row=6, column=rsi_col)
+    diff_cell = ws.cell(row=6, column=diff_close_11_col)
 
     assert close_cell.value is not None, "Close 셀이 비어 있다"
     assert volume_cell.value is not None, "Volume 셀이 비어 있다"
     assert rsi_cell.value is not None, "RSI 셀이 비어 있다"
+    assert diff_cell.value is not None, "DIFF_Close_11 셀이 비어 있다"
 
     assert close_cell.number_format == "#,##0.00", (
         f"Close num_format 불일치: expected='#,##0.00', actual={close_cell.number_format!r}"
@@ -223,4 +233,12 @@ def test_num_format_baked(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp
     )
     assert rsi_cell.number_format == '0.00"%"', (
         f"RSI num_format 불일치: expected='0.00\"%\"', actual={rsi_cell.number_format!r}"
+    )
+    # gap-fix 01-07: DIFF는 비율 → '0.00%' (Excel가 자동 ×100)
+    assert diff_cell.number_format == "0.00%", (
+        f"DIFF_Close_11 num_format 불일치: expected='0.00%', actual={diff_cell.number_format!r}"
+    )
+    # DIFF 값은 비율 스케일 — 절댓값 < 1
+    assert abs(float(diff_cell.value)) < 1.0, (
+        f"DIFF_Close_11 값이 비율 스케일이 아니다: {diff_cell.value}"
     )

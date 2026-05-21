@@ -29,10 +29,10 @@ from stocksig.output.writer import make_workbook
 
 logger = logging.getLogger(__name__)
 
-# --- D-03 데이터 컬럼 (40개) — expanding stats 대상 ---------------------------
+# --- 데이터 컬럼 (24개) — expanding stats 대상 (gap-fix 01-07) -------------
 # 4 OHLCV(Open 제외): Close, High, Low, Volume
-# 12 EMA + 12 DIFF + 12 dailychg = 36
-# 총 40
+# 4 EMA_Close + 12 DIFF + 4 dailychg = 20
+# 총 24
 _OHLCV_DATA: list[str] = ["Close", "High", "Low", "Volume"]
 _PRICES: list[str] = ["Close", "High", "Low"]
 _EMA_PERIODS: list[int] = [11, 22, 96, 192]
@@ -40,20 +40,21 @@ _EMA_PERIODS: list[int] = [11, 22, 96, 192]
 
 def _build_data_cols() -> list[str]:
     cols: list[str] = list(_OHLCV_DATA)
-    for price in _PRICES:
-        for n in _EMA_PERIODS:
-            cols.append(f"EMA_{price}_{n}")
+    # EMA_Close_N — Close만 (gap-fix 01-07)
+    for n in _EMA_PERIODS:
+        cols.append(f"EMA_Close_{n}")
+    # DIFF — 3 prices × 4 periods, 모두 EMA_Close_N 기준 (비율)
     for price in _PRICES:
         for n in _EMA_PERIODS:
             cols.append(f"DIFF_{price}_{n}")
-    for price in _PRICES:
-        for n in _EMA_PERIODS:
-            cols.append(f"EMA_{price}_{n}_dailychg")
+    # dailychg — Close만
+    for n in _EMA_PERIODS:
+        cols.append(f"EMA_Close_{n}_dailychg")
     return cols
 
 
 DATA_COLS: list[str] = _build_data_cols()
-assert len(DATA_COLS) == 40, f"DATA_COLS는 40 컬럼이어야 한다 (현재: {len(DATA_COLS)})"
+assert len(DATA_COLS) == 24, f"DATA_COLS는 24 컬럼이어야 한다 (현재: {len(DATA_COLS)})"
 
 
 def run(
