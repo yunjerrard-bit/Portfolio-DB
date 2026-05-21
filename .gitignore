@@ -1,5 +1,5 @@
 .planning/
-output/
+/output/
 .env
 *.xlsx
 __pycache__/
