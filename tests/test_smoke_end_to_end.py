@@ -310,6 +310,65 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
         )
 
 
+def test_header_freeze_and_colored_bold(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-10: 1) 1~5행 freeze, 2) 색이 칠해진 셀은 bold, DEFAULT 셀은 not bold."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    # (1) freeze_panes: openpyxl는 'A6' 문자열로 읽음 (row 6부터 스크롤)
+    assert ws.freeze_panes == "A6", (
+        f"freeze_panes 불일치: expected='A6', actual={ws.freeze_panes!r}"
+    )
+
+    # (2) 색 있는 Close 셀과 DEFAULT Close 셀을 찾아 bold 검증
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    close = sorted_asc["Close"]
+    expanding_median = close.expanding().median()
+    expanding_std = close.expanding().std()
+    n = len(sorted_asc)
+
+    colored_cell_addr: str | None = None
+    default_cell_addr: str | None = None
+    for asc_idx in range(n):
+        value = close.iloc[asc_idx]
+        med = expanding_median.iloc[asc_idx]
+        std = expanding_std.iloc[asc_idx]
+        bucket = decide_sigma_bucket(value, med, std)
+        descending_row_offset = (n - 1) - asc_idx
+        excel_row = 6 + descending_row_offset
+        cell = ws.cell(row=excel_row, column=2)  # Close col
+        addr = cell.coordinate
+        if bucket != SigmaBucket.DEFAULT and colored_cell_addr is None:
+            colored_cell_addr = addr
+        if bucket == SigmaBucket.DEFAULT and default_cell_addr is None:
+            default_cell_addr = addr
+        if colored_cell_addr and default_cell_addr:
+            break
+
+    assert colored_cell_addr is not None, (
+        "mock fixture에서 색 있는 SigmaBucket Close 셀을 찾을 수 없다"
+    )
+    assert default_cell_addr is not None, (
+        "mock fixture에서 DEFAULT SigmaBucket Close 셀을 찾을 수 없다"
+    )
+
+    colored_cell = ws[colored_cell_addr]
+    default_cell = ws[default_cell_addr]
+    assert colored_cell.font.b is True, (
+        f"색 있는 셀 {colored_cell_addr}는 bold여야 한다 (actual font.b={colored_cell.font.b})"
+    )
+    assert not default_cell.font.b, (
+        f"DEFAULT 셀 {default_cell_addr}는 not bold여야 한다 (actual font.b={default_cell.font.b})"
+    )
+
+
 def test_diff_columns_ordered_by_period():
     """gap-fix 01-09: DIFF 컬럼이 EMA period 기준으로 그룹화되어야 한다.
 
