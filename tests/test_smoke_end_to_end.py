@@ -83,7 +83,7 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     assert ws["A1"].value == "AAPL"
 
     # 컬럼 폭: 68 (gap-fix 01-12: Date + 12 OHLCV + 16 EMA_Close[val,med,std,trend] + 36 DIFF + 3 tech)
-    assert ws.max_column == 68, f"시트 폭은 68여야 한다 (현재: {ws.max_column})"
+    assert ws.max_column == 70, f"시트 폭은 70여야 한다 (현재: {ws.max_column})"
 
     # gap-fix 01-07: 신규 한국어 헤더 검증
     layout = build_column_layout()
@@ -278,7 +278,8 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
     _EMA_VAL = _re.compile(r"^EMA_Close_\d+$")
 
     # 숨김 대상 검증 (sample) — gap-fix 01-11/01-12: EMA_Close_N 값 컬럼도 hidden
-    hidden_targets = ["Close_median", "Close_std", "DIFF_Close_11_std", "Volume_median",
+    hidden_targets = ["Close_median", "Close_std", "DIFF_Close_11_std",
+                       "Volume_pct_change_median", "Volume_pct_change_std",
                        "EMA_Close_192_median",
                        "EMA_Close_11", "EMA_Close_192"]
     for col_name in hidden_targets:
@@ -406,8 +407,8 @@ def test_diff_columns_ordered_by_period():
             f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
         )
 
-    # 총 컬럼 수 68 (gap-fix 01-12: -12 dailychg 그룹)
-    assert len(layout) == 68, f"총 컬럼 수 68 이어야 함, 실제: {len(layout)}"
+    # 총 컬럼 수 70 (gap-fix 01-13: +Close_pct_change +Volume_pct_change(+_median/_std) -Volume_median/_std)
+    assert len(layout) == 70, f"총 컬럼 수 70 이어야 함, 실제: {len(layout)}"
 
 
 def test_ema_value_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
@@ -546,3 +547,185 @@ def test_trend_color_baking(
     )
     assert pos_cell.font.b is True, "trend>0 셀은 bold (01-10 룰)"
     assert neg_cell.font.b is True, "trend<0 셀은 bold (01-10 룰)"
+
+
+# --- gap-fix 01-13 smoke tests ------------------------------------------------
+
+
+def _is_hidden_factory(ws):
+    def is_hidden(col_excel_idx: int) -> bool:
+        for cd in ws.column_dimensions.values():
+            if cd.min is None or cd.max is None:
+                continue
+            if cd.min <= col_excel_idx <= cd.max:
+                return bool(cd.hidden)
+        return False
+    return is_hidden
+
+
+def test_close_pct_change_visible_and_colored(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-13: Close_pct_change 가시, '0.00%' 포맷, trend bucket 색."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    col_idx = layout.index("Close_pct_change")
+    excel_col = col_idx + 1
+    is_hidden = _is_hidden_factory(ws)
+    assert is_hidden(excel_col) is False
+    assert ws.cell(row=5, column=excel_col).value == "종가 등락률"
+
+    # mock에서 Close pct_change 재계산
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    cpc = sorted_asc["Close"].pct_change()
+    n = len(sorted_asc)
+
+    pos_row = neg_row = None
+    for asc_idx in range(n):
+        v = cpc.iloc[asc_idx]
+        if v is None or (isinstance(v, float) and (v != v)):
+            continue
+        excel_row = 6 + ((n - 1) - asc_idx)
+        if v > 0 and pos_row is None:
+            pos_row = (excel_row, v)
+        elif v < 0 and neg_row is None:
+            neg_row = (excel_row, v)
+        if pos_row and neg_row:
+            break
+    assert pos_row and neg_row
+
+    pos_cell = ws.cell(row=pos_row[0], column=excel_col)
+    neg_cell = ws.cell(row=neg_row[0], column=excel_col)
+    assert pos_cell.number_format == "0.00%"
+    assert neg_cell.number_format == "0.00%"
+    pos_hex = _normalize_rgb(pos_cell.font.color.rgb) if pos_cell.font.color else None
+    neg_hex = _normalize_rgb(neg_cell.font.color.rgb) if neg_cell.font.color else None
+    assert pos_hex == GREEN_800.lstrip("#").upper()
+    assert neg_hex == RED_800.lstrip("#").upper()
+
+
+def test_volume_pct_change_sigma_colored(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-13: Volume_pct_change 가시, '0.00%' 포맷, sigma bucket 색."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    col_idx = layout.index("Volume_pct_change")
+    excel_col = col_idx + 1
+    is_hidden = _is_hidden_factory(ws)
+    assert is_hidden(excel_col) is False
+    assert ws.cell(row=5, column=excel_col).value == "거래량 등락률"
+
+    # 데이터 행 num_format 확인 (충분히 뒤쪽 — non-NaN 행)
+    data_cell = ws.cell(row=6, column=excel_col)
+    assert data_cell.number_format == "0.00%"
+    assert data_cell.value is not None
+
+    # mock에서 decide_sigma_bucket 재계산해 적어도 한 행에서 색 일치 검증
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    vpc = sorted_asc["Volume"].pct_change()
+    vpc_med = vpc.expanding().median()
+    vpc_std = vpc.expanding().std()
+    n = len(sorted_asc)
+
+    # 최신 행에서 검증 (asc index n-1 → excel_row 6)
+    asc_idx = n - 1
+    excel_row = 6
+    expected = decide_sigma_bucket(vpc.iloc[asc_idx], vpc_med.iloc[asc_idx], vpc_std.iloc[asc_idx])
+    cell = ws.cell(row=excel_row, column=excel_col)
+    expected_font = _SIGMA_FONT_HEX[expected]
+    actual_font = _normalize_rgb(cell.font.color.rgb) if cell.font.color else None
+    if expected_font is None:
+        assert actual_font in (None, "000000")
+    else:
+        assert actual_font == expected_font, (
+            f"row {excel_row} (bucket={expected}) 폰트 색 불일치: "
+            f"expected={expected_font}, actual={actual_font}"
+        )
+
+
+def test_volume_cell_colored_by_pct_change(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-13: Volume 셀 자체가 Volume_pct_change 부호 기반 trend 색."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    col_idx = layout.index("Volume")
+    excel_col = col_idx + 1
+
+    # Volume 셀 num_format 변경 없음
+    assert ws.cell(row=6, column=excel_col).number_format == "#,##0"
+
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    vpc = sorted_asc["Volume"].pct_change()
+    n = len(sorted_asc)
+
+    pos_row = neg_row = None
+    for asc_idx in range(n):
+        v = vpc.iloc[asc_idx]
+        if v is None or (isinstance(v, float) and (v != v)):
+            continue
+        excel_row = 6 + ((n - 1) - asc_idx)
+        if v > 0 and pos_row is None:
+            pos_row = excel_row
+        elif v < 0 and neg_row is None:
+            neg_row = excel_row
+        if pos_row and neg_row:
+            break
+    assert pos_row and neg_row
+
+    pos_cell = ws.cell(row=pos_row, column=excel_col)
+    neg_cell = ws.cell(row=neg_row, column=excel_col)
+    pos_hex = _normalize_rgb(pos_cell.font.color.rgb) if pos_cell.font.color else None
+    neg_hex = _normalize_rgb(neg_cell.font.color.rgb) if neg_cell.font.color else None
+    assert pos_hex == GREEN_800.lstrip("#").upper()
+    assert neg_hex == RED_800.lstrip("#").upper()
+
+
+def test_volume_median_std_now_pct_change(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-13: 기존 Volume_median/_std 사라지고 Volume_pct_change_median/_std hidden + percent_ratio."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    assert "Volume_median" not in layout
+    assert "Volume_std" not in layout
+    assert "Volume_pct_change_median" in layout
+    assert "Volume_pct_change_std" in layout
+
+    is_hidden = _is_hidden_factory(ws)
+    for col_name in ["Volume_pct_change_median", "Volume_pct_change_std"]:
+        col_idx = layout.index(col_name)
+        excel_col = col_idx + 1
+        assert is_hidden(excel_col) is True, f"{col_name} must be hidden"
+        # 데이터 행 num_format
+        cell = ws.cell(row=6, column=excel_col)
+        assert cell.number_format == "0.00%"

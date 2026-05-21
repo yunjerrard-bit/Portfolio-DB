@@ -9,7 +9,11 @@ import math
 
 import pandas as pd
 
-from stocksig.compute.stats import add_expanding_stats, cumulative_scalars
+from stocksig.compute.stats import (
+    add_expanding_stats,
+    add_pct_change_columns,
+    cumulative_scalars,
+)
 
 
 def test_expanding_median_std():
@@ -39,21 +43,41 @@ def test_cumulative_scalars():
     assert math.isclose(scalars["Close"]["std"], 15.811388300841896, abs_tol=1e-6)
 
 
-def test_expanding_volume(mock_ohlcv_df):
-    # GIVEN: df with Volume column
-    # WHEN: add_expanding_stats(df, ["Volume"])
-    # THEN: Volume_median, Volume_std columns appended; values match pandas expanding equivalents
-    out = add_expanding_stats(mock_ohlcv_df, ["Volume"])
-    assert "Volume_median" in out.columns
-    assert "Volume_std" in out.columns
-    # Equivalence check
+def test_expanding_volume_pct_change(mock_ohlcv_df):
+    # gap-fix 01-13: Volume_median/_std는 더 이상 사용하지 않음 — Volume_pct_change 기반으로 교체.
+    df = add_pct_change_columns(mock_ohlcv_df)
+    out = add_expanding_stats(df, ["Volume_pct_change"])
+    assert "Volume_pct_change_median" in out.columns
+    assert "Volume_pct_change_std" in out.columns
     pd.testing.assert_series_equal(
-        out["Volume_median"],
-        mock_ohlcv_df["Volume"].expanding().median(),
+        out["Volume_pct_change_median"],
+        df["Volume_pct_change"].expanding().median(),
         check_names=False,
     )
     pd.testing.assert_series_equal(
-        out["Volume_std"],
-        mock_ohlcv_df["Volume"].expanding().std(),
+        out["Volume_pct_change_std"],
+        df["Volume_pct_change"].expanding().std(),
         check_names=False,
     )
+
+
+def test_pct_change_columns():
+    """gap-fix 01-13: add_pct_change_columns adds Close_pct_change + Volume_pct_change."""
+    df = pd.DataFrame(
+        {
+            "Close": [100.0, 110.0, 99.0, 99.0],
+            "Volume": [1000.0, 2000.0, 1000.0, 500.0],
+        }
+    )
+    out = add_pct_change_columns(df)
+    assert "Close_pct_change" in out.columns
+    assert "Volume_pct_change" in out.columns
+    # 첫 행 NaN, 이후 (curr-prev)/prev
+    assert math.isnan(out["Close_pct_change"].iloc[0])
+    assert math.isclose(out["Close_pct_change"].iloc[1], 0.10, abs_tol=1e-9)
+    assert math.isclose(out["Close_pct_change"].iloc[2], -0.10, abs_tol=1e-9)
+    assert math.isclose(out["Close_pct_change"].iloc[3], 0.0, abs_tol=1e-9)
+    assert math.isnan(out["Volume_pct_change"].iloc[0])
+    assert math.isclose(out["Volume_pct_change"].iloc[1], 1.0, abs_tol=1e-9)
+    assert math.isclose(out["Volume_pct_change"].iloc[2], -0.5, abs_tol=1e-9)
+    assert math.isclose(out["Volume_pct_change"].iloc[3], -0.5, abs_tol=1e-9)
