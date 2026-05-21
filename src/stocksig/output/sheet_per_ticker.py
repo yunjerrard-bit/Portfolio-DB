@@ -1,8 +1,9 @@
-"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹).
+"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06).
 
 build_column_layout(df): 124 컬럼 이름 list (D-03 순서).
 korean_header(col): 원본 컬럼명 → 한국어 헤더.
 KOREAN_HEADERS: 정적 dict alias (korean_header lookup 가능).
+column_num_format(col): col_name → "price" | "volume" | "percent" (gap-fix 01-06).
 write_sheet_for_ticker(wb, formats, ticker, df, scalars): 시트 1개 작성.
 """
 
@@ -24,6 +25,9 @@ _PRICES = ["Close", "High", "Low"]
 _EMA_PERIODS = [11, 22, 96, 192]
 
 _PRICE_KR = {"Close": "종가", "High": "고가", "Low": "저가", "Volume": "거래량"}
+
+_VOLUME_COLS = {"Volume", "Volume_median", "Volume_std"}
+_PERCENT_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
 
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
@@ -106,6 +110,21 @@ def korean_header(col: str) -> str:
 KOREAN_HEADERS: dict[str, str] = {col: korean_header(col) for col in build_column_layout()}
 
 
+def column_num_format(col_name: str) -> str:
+    """컬럼명 → num_format type ("price" | "volume" | "percent").
+
+    분류 규칙 (gap-fix 01-06):
+      - Volume 계열 (Volume, Volume_median, Volume_std) → "volume" (#,##0)
+      - Stoch_%K, Stoch_%D, RSI → "percent" (0.00"%")
+      - 그 외 (Close/High/Low + EMA/DIFF/dailychg + 모든 _median/_std) → "price" (#,##0.00)
+    """
+    if col_name in _VOLUME_COLS:
+        return "volume"
+    if col_name in _PERCENT_COLS:
+        return "percent"
+    return "price"
+
+
 def write_sheet_for_ticker(
     wb,
     formats: dict,
@@ -113,7 +132,7 @@ def write_sheet_for_ticker(
     enriched_df: pd.DataFrame,
     scalars: dict[str, dict[str, float]],
 ) -> None:
-    """티커 시트 1개를 D-03 레이아웃 + 정적 색 베이킹으로 작성.
+    """티커 시트 1개를 D-03 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
 
     Layout:
       row 0 (A1): ticker (SHEET-02)
@@ -122,8 +141,9 @@ def write_sheet_for_ticker(
       row 4: 한국어 헤더 (header Format) (SHEET-05)
       row 5+: enriched_df.sort_index(ascending=False) 한 행씩 (SHEET-06)
 
-    각 데이터 셀에 SigmaBucket / Stoch·RSI 셀에 TechBucket Format 적용.
-    DEFAULT bucket은 fmt 미지정 (기본 검정).
+    각 데이터 셀에 (bucket, fmt_type) Format 적용:
+      - bucket: 색 (SigmaBucket / TechBucket / DEFAULT)
+      - fmt_type: column_num_format(col_name) → price/volume/percent
     """
     ws = wb.add_worksheet(ticker)
     ws.write(0, 0, ticker)
@@ -131,16 +151,23 @@ def write_sheet_for_ticker(
     layout = build_column_layout(enriched_df)
     header_fmt = formats["header"]
 
-    # 3·4행: median / std 스칼라
+    # 3·4행: median / std 스칼라 (DEFAULT bucket + 컬럼별 num_format)
     for col_idx, col_name in enumerate(layout):
         if col_name == "Date" or col_name.endswith(("_median", "_std")):
             continue
         if col_name in scalars:
             stats = scalars[col_name]
+            fmt_type = column_num_format(col_name)
+            # 3/4행은 통계 스칼라 → 색 없음(DEFAULT) + num_format
+            # OHLCV 컬럼은 SigmaBucket.DEFAULT, 기술지표는 TechBucket.DEFAULT 사용
+            if col_name in _PERCENT_COLS:
+                default_fmt = formats[(TechBucket.DEFAULT, fmt_type)]
+            else:
+                default_fmt = formats[(SigmaBucket.DEFAULT, fmt_type)]
             if "median" in stats and stats["median"] is not None:
-                ws.write(2, col_idx, stats["median"])
+                ws.write(2, col_idx, stats["median"], default_fmt)
             if "std" in stats and stats["std"] is not None:
-                ws.write(3, col_idx, stats["std"])
+                ws.write(3, col_idx, stats["std"], default_fmt)
 
     # 5행: 한국어 헤더 (header Format)
     for col_idx, col_name in enumerate(layout):
@@ -170,24 +197,22 @@ def write_sheet_for_ticker(
                 ws.write_blank(excel_row, col_idx, None)
                 continue
 
-            # 색 결정
+            fmt_type = column_num_format(col_name)
+
+            # 색 결정 → bucket
             if col_name in ("Stoch_%K", "Stoch_%D"):
                 bucket = decide_stoch_bucket(value)
-                fmt = formats[bucket] if bucket != TechBucket.DEFAULT else None
             elif col_name == "RSI":
                 bucket = decide_rsi_bucket(value)
-                fmt = formats[bucket] if bucket != TechBucket.DEFAULT else None
             elif col_name.endswith(("_median", "_std")):
-                fmt = None
+                # row 단위 _median/_std 값 — 색 없음, num_format만
+                bucket = SigmaBucket.DEFAULT
             else:
                 med = row.get(f"{col_name}_median")
                 std = row.get(f"{col_name}_std")
                 bucket = decide_sigma_bucket(value, med, std)
-                fmt = formats[bucket] if bucket != SigmaBucket.DEFAULT else None
 
-            if fmt is None:
-                ws.write(excel_row, col_idx, value)
-            else:
-                ws.write(excel_row, col_idx, value, fmt)
+            fmt = formats[(bucket, fmt_type)]
+            ws.write(excel_row, col_idx, value, fmt)
 
     ws.set_column(0, len(layout) - 1, 12)
