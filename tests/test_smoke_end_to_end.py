@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import openpyxl
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 from stocksig.compute.color_rules import (
     GREEN_100,
@@ -242,3 +243,68 @@ def test_num_format_baked(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp
     assert abs(float(diff_cell.value)) < 1.0, (
         f"DIFF_Close_11 값이 비율 스케일이 아니다: {diff_cell.value}"
     )
+
+
+def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-08: 모든 *_median, *_std 컬럼은 hidden=True, 그 외 가시.
+
+    검증:
+      - Close_median, DIFF_Close_11_std 위치 → hidden == True
+      - Close, RSI, Stoch_%K 등 primary 컬럼 → hidden == False
+      - 데이터·서식은 그대로 유지 (값 존재 확인)
+    """
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+
+    # XlsxWriter는 연속된 set_column 호출을 min/max 범위로 합쳐 저장하므로,
+    # openpyxl의 ws.column_dimensions[letter]는 defaultdict 동작으로 빈 항목을 만들 수 있다.
+    # 실제 컬럼 속성은 저장된 모든 ColumnDimension 의 (min, max) 범위를 순회해 찾는다.
+    def is_hidden(col_excel_idx: int) -> bool:
+        for cd in ws.column_dimensions.values():
+            if cd.min is None or cd.max is None:
+                continue
+            if cd.min <= col_excel_idx <= cd.max:
+                return bool(cd.hidden)
+        return False
+
+    # 숨김 대상 검증 (sample)
+    hidden_targets = ["Close_median", "Close_std", "DIFF_Close_11_std", "Volume_median",
+                       "EMA_Close_192_median", "EMA_Close_11_dailychg_std"]
+    for col_name in hidden_targets:
+        col_idx = layout.index(col_name)
+        letter = get_column_letter(col_idx + 1)
+        assert is_hidden(col_idx + 1) is True, (
+            f"{col_name} (column {letter}) 는 hidden=True 여야 한다"
+        )
+
+    # 비숨김 대상 검증
+    visible_targets = ["Close", "High", "Low", "Volume", "EMA_Close_11",
+                        "DIFF_Close_11", "RSI", "Stoch_%K", "Stoch_%D"]
+    for col_name in visible_targets:
+        col_idx = layout.index(col_name)
+        letter = get_column_letter(col_idx + 1)
+        assert is_hidden(col_idx + 1) is False, (
+            f"{col_name} (column {letter}) 는 hidden=False 여야 한다"
+        )
+
+    # 데이터 유지 확인: 숨겨진 컬럼에도 값이 살아있어야 함
+    close_median_idx = layout.index("Close_median")
+    close_median_cell = ws.cell(row=6, column=close_median_idx + 1)
+    assert close_median_cell.value is not None, "Close_median 셀 데이터는 보존되어야 한다"
+
+    # 전체 layout 모든 *_median / *_std 가 빠짐없이 hidden인지 확인
+    for col_idx, col_name in enumerate(layout):
+        letter = get_column_letter(col_idx + 1)
+        expected_hidden = col_name.endswith(("_median", "_std"))
+        actual_hidden = is_hidden(col_idx + 1)
+        assert actual_hidden == expected_hidden, (
+            f"{col_name} (column {letter}) hidden 불일치: "
+            f"expected={expected_hidden}, actual={actual_hidden}"
+        )
