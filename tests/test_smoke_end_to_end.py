@@ -82,8 +82,8 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     # SHEET-02: A1 == ticker
     assert ws["A1"].value == "AAPL"
 
-    # 컬럼 폭: 80 (gap-fix 01-11: Date + 12 OHLCV + 16 EMA_Close[val,med,std,trend] + 36 DIFF + 12 dailychg + 3 tech)
-    assert ws.max_column == 80, f"시트 폭은 80여야 한다 (현재: {ws.max_column})"
+    # 컬럼 폭: 68 (gap-fix 01-12: Date + 12 OHLCV + 16 EMA_Close[val,med,std,trend] + 36 DIFF + 3 tech)
+    assert ws.max_column == 68, f"시트 폭은 68여야 한다 (현재: {ws.max_column})"
 
     # gap-fix 01-07: 신규 한국어 헤더 검증
     layout = build_column_layout()
@@ -212,7 +212,7 @@ def test_num_format_baked(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp
     layout = build_column_layout()
     close_col = layout.index("Close") + 1
     volume_col = layout.index("Volume") + 1
-    rsi_col = layout.index("RSI") + 1  # gap-fix 01-07: 새 위치 (76번째)
+    rsi_col = layout.index("RSI") + 1  # gap-fix 01-12: 새 위치 (68번째)
     diff_close_11_col = layout.index("DIFF_Close_11") + 1  # gap-fix 01-07: percent_ratio
 
     # 데이터 첫 행 = row 6 (내림차순 최신)
@@ -277,9 +277,9 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
     import re as _re
     _EMA_VAL = _re.compile(r"^EMA_Close_\d+$")
 
-    # 숨김 대상 검증 (sample) — gap-fix 01-11: EMA_Close_N 값 컬럼도 hidden
+    # 숨김 대상 검증 (sample) — gap-fix 01-11/01-12: EMA_Close_N 값 컬럼도 hidden
     hidden_targets = ["Close_median", "Close_std", "DIFF_Close_11_std", "Volume_median",
-                       "EMA_Close_192_median", "EMA_Close_11_dailychg_std",
+                       "EMA_Close_192_median",
                        "EMA_Close_11", "EMA_Close_192"]
     for col_name in hidden_targets:
         col_idx = layout.index(col_name)
@@ -289,9 +289,9 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
         )
 
     # 비숨김 대상 검증 — EMA_Close_N (값)은 이제 hidden이므로 제외, trend는 가시
+    # gap-fix 01-12: dailychg 컬럼은 제거되어 검증 대상 아님
     visible_targets = ["Close", "High", "Low", "Volume",
                         "EMA_Close_11_trend", "EMA_Close_192_trend",
-                        "EMA_Close_11_dailychg",
                         "DIFF_Close_11", "RSI", "Stoch_%K", "Stoch_%D"]
     for col_name in visible_targets:
         col_idx = layout.index(col_name)
@@ -406,8 +406,8 @@ def test_diff_columns_ordered_by_period():
             f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
         )
 
-    # 총 컬럼 수 80 (gap-fix 01-11: +4 trend)
-    assert len(layout) == 80, f"총 컬럼 수 80 이어야 함, 실제: {len(layout)}"
+    # 총 컬럼 수 68 (gap-fix 01-12: -12 dailychg 그룹)
+    assert len(layout) == 68, f"총 컬럼 수 68 이어야 함, 실제: {len(layout)}"
 
 
 def test_ema_value_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):

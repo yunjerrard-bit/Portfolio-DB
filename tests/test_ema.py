@@ -1,10 +1,10 @@
 """COMP-01/02/03 GREEN tests.
 
 Wave 2 구현: stocksig.compute.ema
-Updated for gap-fix 01-07 (Close-EMA-only contract):
+Updated for gap-fix 01-07 / 01-12 (Close-EMA-only contract, no dailychg):
   - EMA: 4 (Close × 4 periods)
   - DIFF: 12 (Close/High/Low × 4) — all referenced to EMA_Close_N, stored as ratio
-  - dailychg: 4 (Close × 4) — raw price-unit diff
+  - trend: 4 (Close × 4) — pct_change ratio (gap-fix 01-11, replaces dailychg)
 """
 
 import math
@@ -46,20 +46,15 @@ def test_diff_columns(mock_ohlcv_df):
             )
 
 
-def test_daily_change(mock_ohlcv_df):
-    # GIVEN: OHLCV df
-    # WHEN: add_ema_columns runs
-    # THEN: only EMA_Close_N_dailychg exists, == EMA_Close_N.diff()
+def test_no_dailychg_columns(mock_ohlcv_df):
+    # gap-fix 01-12: dailychg 컬럼은 완전히 제거됨 — trend가 대체.
+    # 어떤 (price, period) 조합에 대해서도 *_dailychg 컬럼이 존재하면 안 된다.
     out = add_ema_columns(mock_ohlcv_df)
+    assert not any(c.endswith("_dailychg") for c in out.columns), (
+        f"dailychg cols leaked: {[c for c in out.columns if c.endswith('_dailychg')]}"
+    )
     for n in EMA_PERIODS:
-        ema_col = f"EMA_Close_{n}"
-        chg_col = f"EMA_Close_{n}_dailychg"
-        assert chg_col in out.columns, f"missing {chg_col}"
-        pd.testing.assert_series_equal(
-            out[chg_col], out[ema_col].diff(), check_names=False
-        )
-        # High/Low dailychg는 contract에서 제거됨
-        for price_col in ["High", "Low"]:
+        for price_col in ["Close", "High", "Low"]:
             assert f"EMA_{price_col}_{n}_dailychg" not in out.columns
 
 
