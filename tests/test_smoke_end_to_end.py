@@ -82,8 +82,8 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     # SHEET-02: A1 == ticker
     assert ws["A1"].value == "AAPL"
 
-    # 컬럼 폭: 76 (gap-fix 01-07: Date + 12 OHLCV + 12 EMA_Close + 36 DIFF + 12 dailychg + 3 tech)
-    assert ws.max_column == 76, f"시트 폭은 76여야 한다 (현재: {ws.max_column})"
+    # 컬럼 폭: 80 (gap-fix 01-11: Date + 12 OHLCV + 16 EMA_Close[val,med,std,trend] + 36 DIFF + 12 dailychg + 3 tech)
+    assert ws.max_column == 80, f"시트 폭은 80여야 한다 (현재: {ws.max_column})"
 
     # gap-fix 01-07: 신규 한국어 헤더 검증
     layout = build_column_layout()
@@ -274,9 +274,13 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
                 return bool(cd.hidden)
         return False
 
-    # 숨김 대상 검증 (sample)
+    import re as _re
+    _EMA_VAL = _re.compile(r"^EMA_Close_\d+$")
+
+    # 숨김 대상 검증 (sample) — gap-fix 01-11: EMA_Close_N 값 컬럼도 hidden
     hidden_targets = ["Close_median", "Close_std", "DIFF_Close_11_std", "Volume_median",
-                       "EMA_Close_192_median", "EMA_Close_11_dailychg_std"]
+                       "EMA_Close_192_median", "EMA_Close_11_dailychg_std",
+                       "EMA_Close_11", "EMA_Close_192"]
     for col_name in hidden_targets:
         col_idx = layout.index(col_name)
         letter = get_column_letter(col_idx + 1)
@@ -284,8 +288,10 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
             f"{col_name} (column {letter}) 는 hidden=True 여야 한다"
         )
 
-    # 비숨김 대상 검증
-    visible_targets = ["Close", "High", "Low", "Volume", "EMA_Close_11",
+    # 비숨김 대상 검증 — EMA_Close_N (값)은 이제 hidden이므로 제외, trend는 가시
+    visible_targets = ["Close", "High", "Low", "Volume",
+                        "EMA_Close_11_trend", "EMA_Close_192_trend",
+                        "EMA_Close_11_dailychg",
                         "DIFF_Close_11", "RSI", "Stoch_%K", "Stoch_%D"]
     for col_name in visible_targets:
         col_idx = layout.index(col_name)
@@ -299,10 +305,12 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
     close_median_cell = ws.cell(row=6, column=close_median_idx + 1)
     assert close_median_cell.value is not None, "Close_median 셀 데이터는 보존되어야 한다"
 
-    # 전체 layout 모든 *_median / *_std 가 빠짐없이 hidden인지 확인
+    # 전체 layout — *_median / *_std / 정확히 EMA_Close_N 값컬럼이 hidden
     for col_idx, col_name in enumerate(layout):
         letter = get_column_letter(col_idx + 1)
-        expected_hidden = col_name.endswith(("_median", "_std"))
+        expected_hidden = (
+            col_name.endswith(("_median", "_std")) or bool(_EMA_VAL.match(col_name))
+        )
         actual_hidden = is_hidden(col_idx + 1)
         assert actual_hidden == expected_hidden, (
             f"{col_name} (column {letter}) hidden 불일치: "
@@ -398,5 +406,143 @@ def test_diff_columns_ordered_by_period():
             f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
         )
 
-    # 총 컬럼 수 76 유지
-    assert len(layout) == 76, f"총 컬럼 수 76 이어야 함, 실제: {len(layout)}"
+    # 총 컬럼 수 80 (gap-fix 01-11: +4 trend)
+    assert len(layout) == 80, f"총 컬럼 수 80 이어야 함, 실제: {len(layout)}"
+
+
+def test_ema_value_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-11: EMA_Close_{11,22,96,192} 값 컬럼은 hidden=True."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+
+    def is_hidden(col_excel_idx: int) -> bool:
+        for cd in ws.column_dimensions.values():
+            if cd.min is None or cd.max is None:
+                continue
+            if cd.min <= col_excel_idx <= cd.max:
+                return bool(cd.hidden)
+        return False
+
+    for n in [11, 22, 96, 192]:
+        col_name = f"EMA_Close_{n}"
+        col_idx = layout.index(col_name)
+        letter = get_column_letter(col_idx + 1)
+        assert is_hidden(col_idx + 1) is True, (
+            f"{col_name} (column {letter}) 는 hidden=True 여야 한다 (gap-fix 01-11)"
+        )
+        # 데이터는 그대로 살아 있어야 함
+        assert ws.cell(row=6, column=col_idx + 1).value is not None
+
+
+def test_trend_columns_visible_and_formatted(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-11: EMA_Close_N_trend 컬럼 가시 + num_format == '0.00%' + 한국어 헤더."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+
+    def is_hidden(col_excel_idx: int) -> bool:
+        for cd in ws.column_dimensions.values():
+            if cd.min is None or cd.max is None:
+                continue
+            if cd.min <= col_excel_idx <= cd.max:
+                return bool(cd.hidden)
+        return False
+
+    expected_kr = {
+        11: "ema11 추세",
+        22: "ema22 추세",
+        96: "ema96 추세",
+        192: "ema192 추세",
+    }
+    for n in [11, 22, 96, 192]:
+        col_name = f"EMA_Close_{n}_trend"
+        col_idx = layout.index(col_name)
+        excel_col = col_idx + 1
+        assert is_hidden(excel_col) is False, (
+            f"{col_name} 는 가시 상태여야 한다 (hidden=False)"
+        )
+        # 한국어 헤더
+        assert ws.cell(row=5, column=excel_col).value == expected_kr[n]
+        # num_format: 데이터 행에서 0.00%
+        data_cell = ws.cell(row=6, column=excel_col)
+        # row 6은 최신, 최신 행은 pct_change non-null이어야 (충분한 mock 데이터 크기)
+        assert data_cell.number_format == "0.00%", (
+            f"{col_name} num_format 불일치: expected='0.00%', actual={data_cell.number_format!r}"
+        )
+
+
+def test_trend_color_baking(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-11: trend > 0 → GREEN_800 bold, trend < 0 → RED_800 bold."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    # EMA_Close_11_trend 컬럼
+    trend_col_idx = layout.index("EMA_Close_11_trend")
+    excel_col = trend_col_idx + 1
+
+    # mock_ohlcv_df 에서 EMA_Close_11 + pct_change 직접 재계산
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    ema11 = sorted_asc["Close"].ewm(span=11, adjust=False).mean()
+    trend = ema11.pct_change()
+    n_rows = len(sorted_asc)
+
+    pos_row = neg_row = None
+    pos_value = neg_value = None
+    for asc_idx in range(n_rows):
+        v = trend.iloc[asc_idx]
+        if v is None or (isinstance(v, float) and (v != v)):
+            continue
+        excel_row = 6 + ((n_rows - 1) - asc_idx)
+        if v > 0 and pos_row is None:
+            pos_row = excel_row
+            pos_value = v
+        elif v < 0 and neg_row is None:
+            neg_row = excel_row
+            neg_value = v
+        if pos_row and neg_row:
+            break
+
+    assert pos_row is not None, "mock 데이터에서 trend > 0 행이 필요"
+    assert neg_row is not None, "mock 데이터에서 trend < 0 행이 필요"
+
+    pos_cell = ws.cell(row=pos_row, column=excel_col)
+    neg_cell = ws.cell(row=neg_row, column=excel_col)
+
+    # 값 정합성
+    assert abs(float(pos_cell.value) - float(pos_value)) < 1e-9
+    assert abs(float(neg_cell.value) - float(neg_value)) < 1e-9
+
+    # 폰트 색 + bold (gap-fix 01-10 컨벤션 동일)
+    pos_font_hex = _normalize_rgb(pos_cell.font.color.rgb) if pos_cell.font.color else None
+    neg_font_hex = _normalize_rgb(neg_cell.font.color.rgb) if neg_cell.font.color else None
+    assert pos_font_hex == GREEN_800.lstrip("#").upper(), (
+        f"trend>0 셀 ({pos_cell.coordinate}) 폰트 색 불일치: {pos_font_hex}"
+    )
+    assert neg_font_hex == RED_800.lstrip("#").upper(), (
+        f"trend<0 셀 ({neg_cell.coordinate}) 폰트 색 불일치: {neg_font_hex}"
+    )
+    assert pos_cell.font.b is True, "trend>0 셀은 bold (01-10 룰)"
+    assert neg_cell.font.b is True, "trend<0 셀은 bold (01-10 룰)"
