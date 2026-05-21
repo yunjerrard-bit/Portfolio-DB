@@ -218,3 +218,6 @@ def write_sheet_for_ticker(
     for col_idx, col_name in enumerate(layout):
         if col_name.endswith(("_median", "_std")):
             ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
+
+    # gap-fix 01-10: 1~5행(ticker, median, std, blank, 한국어 헤더) 고정 — 스크롤 시 항상 보임
+    ws.freeze_panes(5, 0)
