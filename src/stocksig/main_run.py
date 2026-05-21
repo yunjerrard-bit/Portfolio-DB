@@ -20,7 +20,11 @@ from pathlib import Path
 
 from stocksig.compute.ema import add_ema_columns
 from stocksig.compute.indicators import rsi_wilder, stoch_slow
-from stocksig.compute.stats import add_expanding_stats, cumulative_scalars
+from stocksig.compute.stats import (
+    add_expanding_stats,
+    add_pct_change_columns,
+    cumulative_scalars,
+)
 from stocksig.config import load_env
 from stocksig.io.input import read_tickers
 from stocksig.io.market import fetch_ohlcv
@@ -29,11 +33,11 @@ from stocksig.output.writer import make_workbook
 
 logger = logging.getLogger(__name__)
 
-# --- 데이터 컬럼 (20개) — expanding stats 대상 (gap-fix 01-07 / 01-12) ------
-# 4 OHLCV(Open 제외): Close, High, Low, Volume
+# --- 데이터 컬럼 (20개) — expanding stats 대상 (gap-fix 01-07 / 01-12 / 01-13) -
+# 4 entries: Close, High, Low, Volume_pct_change (gap-fix 01-13: Volume→Volume_pct_change)
 # 4 EMA_Close + 12 DIFF = 16
-# 총 20 (gap-fix 01-12: dailychg 4 엔트리 제거)
-_OHLCV_DATA: list[str] = ["Close", "High", "Low", "Volume"]
+# 총 20
+_OHLCV_DATA: list[str] = ["Close", "High", "Low", "Volume_pct_change"]
 _PRICES: list[str] = ["Close", "High", "Low"]
 _EMA_PERIODS: list[int] = [11, 22, 96, 192]
 
@@ -99,7 +103,10 @@ def run(
             df = add_ema_columns(df)
             logger.info("%s | EMA/DIFF/추세 계산 완료", ticker)
 
-            # 6. expanding median/std (COMP-04)
+            # 5b. Close_pct_change, Volume_pct_change (gap-fix 01-13)
+            df = add_pct_change_columns(df)
+
+            # 6. expanding median/std (COMP-04) — Volume_pct_change_median/_std 포함
             df = add_expanding_stats(df, DATA_COLS)
 
             # 7. 누적 스칼라 (3행/4행용) (COMP-05)
