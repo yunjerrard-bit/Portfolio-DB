@@ -9,6 +9,18 @@ from __future__ import annotations
 import pandas as pd
 
 
+def add_pct_change_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Close_pct_change, Volume_pct_change 컬럼 추가 (gap-fix 01-13).
+
+    각각 `df['Close'].pct_change()`, `df['Volume'].pct_change()` (비율).
+    첫 행은 NaN. add_expanding_stats 호출 전에 적용.
+    """
+    out = df.copy()
+    out["Close_pct_change"] = out["Close"].pct_change()
+    out["Volume_pct_change"] = out["Volume"].pct_change()
+    return out
+
+
 def add_expanding_stats(df: pd.DataFrame, data_cols: list[str]) -> pd.DataFrame:
     """각 col별 {col}_median, {col}_std 신규 컬럼 추가 (expanding window).
 
