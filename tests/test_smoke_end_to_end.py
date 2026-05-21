@@ -23,6 +23,7 @@ from stocksig.compute.color_rules import (
     decide_sigma_bucket,
 )
 from stocksig.main import run
+from stocksig.output.sheet_per_ticker import build_column_layout
 
 # D-04 hex → openpyxl ARGB (alpha=FF) 매핑
 _SIGMA_FONT_HEX = {
@@ -183,3 +184,43 @@ def test_color_at_three_rows(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, 
                 f"row {excel_row} (bucket={expected_bucket}) 배경 색 불일치: "
                 f"expected={expected_fill_hex}, actual={actual_fill_hex}"
             )
+
+
+def test_num_format_baked(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-06: 각 컬럼 타입의 데이터 셀에 num_format이 베이크되어 있어야 한다.
+
+    - 종가 (Close)    → '#,##0.00'
+    - 거래량 (Volume) → '#,##0'
+    - RSI             → '0.00"%"'
+    """
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    close_col = layout.index("Close") + 1  # 2
+    volume_col = layout.index("Volume") + 1  # 11
+    rsi_col = layout.index("RSI") + 1  # 124
+
+    # 데이터 첫 행 = row 6 (내림차순 최신)
+    close_cell = ws.cell(row=6, column=close_col)
+    volume_cell = ws.cell(row=6, column=volume_col)
+    rsi_cell = ws.cell(row=6, column=rsi_col)
+
+    assert close_cell.value is not None, "Close 셀이 비어 있다"
+    assert volume_cell.value is not None, "Volume 셀이 비어 있다"
+    assert rsi_cell.value is not None, "RSI 셀이 비어 있다"
+
+    assert close_cell.number_format == "#,##0.00", (
+        f"Close num_format 불일치: expected='#,##0.00', actual={close_cell.number_format!r}"
+    )
+    assert volume_cell.number_format == "#,##0", (
+        f"Volume num_format 불일치: expected='#,##0', actual={volume_cell.number_format!r}"
+    )
+    assert rsi_cell.number_format == '0.00"%"', (
+        f"RSI num_format 불일치: expected='0.00\"%\"', actual={rsi_cell.number_format!r}"
+    )
