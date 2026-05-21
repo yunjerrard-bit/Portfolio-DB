@@ -21,7 +21,20 @@ from stocksig.compute.color_rules import (
     decide_rsi_bucket,
     decide_sigma_bucket,
     decide_stoch_bucket,
+    decide_trend_bucket,
 )
+
+
+def test_trend_bucket():
+    # gap-fix 01-11: 양수→SOFT_GREEN, 음수→SOFT_RED, 0/NaN/None→DEFAULT
+    assert decide_trend_bucket(0.0123) == TechBucket.SOFT_GREEN
+    assert decide_trend_bucket(1e-9) == TechBucket.SOFT_GREEN
+    assert decide_trend_bucket(-0.0001) == TechBucket.SOFT_RED
+    assert decide_trend_bucket(-1.0) == TechBucket.SOFT_RED
+    assert decide_trend_bucket(0) == TechBucket.DEFAULT
+    assert decide_trend_bucket(0.0) == TechBucket.DEFAULT
+    assert decide_trend_bucket(float("nan")) == TechBucket.DEFAULT
+    assert decide_trend_bucket(None) == TechBucket.DEFAULT
 
 
 def test_tech_buckets():

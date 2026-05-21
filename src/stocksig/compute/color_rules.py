@@ -88,6 +88,22 @@ def decide_stoch_bucket(value) -> TechBucket:
     return TechBucket.DEFAULT
 
 
+def decide_trend_bucket(value) -> TechBucket:
+    """EMA 전일 대비 등락률(pct_change) 색 결정 (gap-fix 01-11).
+
+    value > 0 → SOFT_GREEN (상승)
+    value < 0 → SOFT_RED   (하락)
+    value == 0 또는 NaN/None → DEFAULT
+    """
+    if _is_nanish(value):
+        return TechBucket.DEFAULT
+    if value > 0:
+        return TechBucket.SOFT_GREEN
+    if value < 0:
+        return TechBucket.SOFT_RED
+    return TechBucket.DEFAULT
+
+
 def decide_rsi_bucket(value) -> TechBucket:
     """RSI 분류 (D-04 임계 30/70)."""
     if _is_nanish(value):
