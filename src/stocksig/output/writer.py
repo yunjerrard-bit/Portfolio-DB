@@ -46,15 +46,16 @@ _NUM_FORMAT_MAP = {
 }
 
 # 색 속성 (bucket → dict, num_format 제외)
+# gap-fix 01-10: 색이 칠해진 6종 bucket에 bold 추가 (DEFAULT 2종은 무색·무볼드 유지)
 _COLOR_PROPS: dict = {
     SigmaBucket.DEFAULT: {},
-    SigmaBucket.SOFT_GREEN: {"font_color": GREEN_800},
-    SigmaBucket.SOFT_RED: {"font_color": RED_800},
-    SigmaBucket.HARD_GREEN: {"font_color": GREEN_900, "bg_color": GREEN_100},
-    SigmaBucket.HARD_RED: {"font_color": RED_900, "bg_color": RED_100},
+    SigmaBucket.SOFT_GREEN: {"font_color": GREEN_800, "bold": True},
+    SigmaBucket.SOFT_RED: {"font_color": RED_800, "bold": True},
+    SigmaBucket.HARD_GREEN: {"font_color": GREEN_900, "bg_color": GREEN_100, "bold": True},
+    SigmaBucket.HARD_RED: {"font_color": RED_900, "bg_color": RED_100, "bold": True},
     TechBucket.DEFAULT: {},
-    TechBucket.SOFT_GREEN: {"font_color": GREEN_800},
-    TechBucket.SOFT_RED: {"font_color": RED_800},
+    TechBucket.SOFT_GREEN: {"font_color": GREEN_800, "bold": True},
+    TechBucket.SOFT_RED: {"font_color": RED_800, "bold": True},
 }
 
 
