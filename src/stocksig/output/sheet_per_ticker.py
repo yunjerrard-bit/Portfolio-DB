@@ -212,3 +212,8 @@ def write_sheet_for_ticker(
             ws.write(excel_row, col_idx, value, fmt)
 
     ws.set_column(0, len(layout) - 1, 12)
+
+    # gap-fix 01-08: *_median / *_std 컬럼은 기본 숨김 (데이터·서식 그대로, Excel에서 펼치기 가능)
+    for col_idx, col_name in enumerate(layout):
+        if col_name.endswith(("_median", "_std")):
+            ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
