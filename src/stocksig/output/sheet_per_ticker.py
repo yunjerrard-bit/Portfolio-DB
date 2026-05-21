@@ -1,6 +1,6 @@
 """티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06/01-07).
 
-build_column_layout(df): 76 컬럼 이름 list (gap-fix 01-07 순서).
+build_column_layout(df): 68 컬럼 이름 list (gap-fix 01-12 — dailychg 제거 후).
 korean_header(col): 원본 컬럼명 → 한국어 헤더.
 KOREAN_HEADERS: 정적 dict alias (korean_header lookup 가능).
 column_num_format(col): col_name → "price" | "volume" | "percent_literal" | "percent_ratio".
@@ -37,11 +37,13 @@ _PERCENT_LITERAL_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
 
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
-    """80 컬럼 이름 list 반환 (gap-fix 01-07/01-11).
+    """68 컬럼 이름 list 반환 (gap-fix 01-07/01-11/01-12).
 
     구조: Date + (4 OHLCV × 3) + (4 EMA_Close × 4) + (12 DIFF × 3)
-        + (4 dailychg × 3) + (Stoch_%K, Stoch_%D, RSI)
-    = 1 + 12 + 16 + 36 + 12 + 3 = 80
+        + (Stoch_%K, Stoch_%D, RSI)
+    = 1 + 12 + 16 + 36 + 3 = 68
+
+    (gap-fix 01-12: dailychg 그룹 4 × 3 = 12 컬럼 제거 — trend가 대체.)
     """
     layout: list[str] = ["Date"]
     # 원천 OHLCV (group 1) — 4 × 3 = 12
@@ -57,11 +59,7 @@ def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
         for price in _PRICES:
             base = f"DIFF_{price}_{n}"
             layout += [base, f"{base}_median", f"{base}_std"]
-    # 2차 EMA_Close 일변동 (group 4) — 4 × 3 = 12
-    for n in _EMA_PERIODS:
-        base = f"EMA_Close_{n}_dailychg"
-        layout += [base, f"{base}_median", f"{base}_std"]
-    # 기술 지표 (group 5)
+    # 기술 지표 (group 4)
     layout += ["Stoch_%K", "Stoch_%D", "RSI"]
     return layout
 
@@ -94,10 +92,7 @@ def korean_header(col: str) -> str:
         n = col[len("EMA_Close_") : -len("_trend")]
         return f"ema{n} 추세"
 
-    # EMA_Close_{n}_dailychg → "종가 EMA{n} 일변동"
-    if col.startswith("EMA_Close_") and col.endswith("_dailychg"):
-        n = col[len("EMA_Close_") : -len("_dailychg")]
-        return f"종가 EMA{n} 일변동"
+    # (gap-fix 01-12: EMA_Close_{n}_dailychg 분기 제거 — 컬럼 자체가 없어짐)
 
     # EMA_Close_{n} → "종가 EMA{n}"
     if col.startswith("EMA_Close_"):
@@ -124,7 +119,7 @@ def column_num_format(col_name: str) -> str:
       - Volume 계열 (Volume, Volume_median, Volume_std) → "volume" (#,##0)
       - Stoch_%K, Stoch_%D, RSI → "percent_literal" (0.00"%") — 값 0~100
       - DIFF_* 와 DIFF_*_median/_std → "percent_ratio" (0.00%) — 값 0~1 비율
-      - 그 외 (Close/High/Low + EMA_Close_N + dailychg + 모든 _median/_std) → "price" (#,##0.00)
+      - 그 외 (Close/High/Low + EMA_Close_N + 모든 _median/_std) → "price" (#,##0.00)
     """
     if col_name in _VOLUME_COLS:
         return "volume"
@@ -146,7 +141,7 @@ def write_sheet_for_ticker(
     enriched_df: pd.DataFrame,
     scalars: dict[str, dict[str, float]],
 ) -> None:
-    """티커 시트 1개를 76 컬럼 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
+    """티커 시트 1개를 68 컬럼 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
 
     Layout:
       row 0 (A1): ticker (SHEET-02)
@@ -231,8 +226,8 @@ def write_sheet_for_ticker(
 
     ws.set_column(0, len(layout) - 1, 12)
 
-    # gap-fix 01-08/01-11: *_median, *_std, 그리고 EMA_Close_{N} 값 컬럼도 숨김.
-    # trend / dailychg 등 다른 suffix 는 가시 유지.
+    # gap-fix 01-08/01-11/01-12: *_median, *_std, 그리고 EMA_Close_{N} 값 컬럼도 숨김.
+    # trend 등 다른 suffix 는 가시 유지. (dailychg 컬럼은 01-12에서 제거됨.)
     for col_idx, col_name in enumerate(layout):
         if col_name.endswith(("_median", "_std")) or _EMA_VALUE_RE.match(col_name):
             ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
