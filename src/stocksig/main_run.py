@@ -29,10 +29,10 @@ from stocksig.output.writer import make_workbook
 
 logger = logging.getLogger(__name__)
 
-# --- 데이터 컬럼 (24개) — expanding stats 대상 (gap-fix 01-07) -------------
+# --- 데이터 컬럼 (20개) — expanding stats 대상 (gap-fix 01-07 / 01-12) ------
 # 4 OHLCV(Open 제외): Close, High, Low, Volume
-# 4 EMA_Close + 12 DIFF + 4 dailychg = 20
-# 총 24
+# 4 EMA_Close + 12 DIFF = 16
+# 총 20 (gap-fix 01-12: dailychg 4 엔트리 제거)
 _OHLCV_DATA: list[str] = ["Close", "High", "Low", "Volume"]
 _PRICES: list[str] = ["Close", "High", "Low"]
 _EMA_PERIODS: list[int] = [11, 22, 96, 192]
@@ -47,14 +47,12 @@ def _build_data_cols() -> list[str]:
     for price in _PRICES:
         for n in _EMA_PERIODS:
             cols.append(f"DIFF_{price}_{n}")
-    # dailychg — Close만
-    for n in _EMA_PERIODS:
-        cols.append(f"EMA_Close_{n}_dailychg")
+    # (gap-fix 01-12: dailychg 엔트리 제거 — 컬럼 자체가 없어짐)
     return cols
 
 
 DATA_COLS: list[str] = _build_data_cols()
-assert len(DATA_COLS) == 24, f"DATA_COLS는 24 컬럼이어야 한다 (현재: {len(DATA_COLS)})"
+assert len(DATA_COLS) == 20, f"DATA_COLS는 20 컬럼이어야 한다 (현재: {len(DATA_COLS)})"
 
 
 def run(
@@ -97,9 +95,9 @@ def run(
             logger.info("%s | OHLCV 수신 시작", ticker)
             df = fetch_ohlcv(ticker)  # MKTD-01~03 (내부에서 수신완료 로그)
 
-            # 5. EMA + DIFF + dailychg (36 컬럼) (COMP-01/02/03)
+            # 5. EMA + DIFF + trend (20 컬럼) (COMP-01/02/03, gap-fix 01-12)
             df = add_ema_columns(df)
-            logger.info("%s | EMA/DIFF/일변동 계산 완료", ticker)
+            logger.info("%s | EMA/DIFF/추세 계산 완료", ticker)
 
             # 6. expanding median/std (COMP-04)
             df = add_expanding_stats(df, DATA_COLS)
