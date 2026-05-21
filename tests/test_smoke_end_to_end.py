@@ -308,3 +308,36 @@ def test_median_std_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_
             f"{col_name} (column {letter}) hidden 불일치: "
             f"expected={expected_hidden}, actual={actual_hidden}"
         )
+
+
+def test_diff_columns_ordered_by_period():
+    """gap-fix 01-09: DIFF 컬럼이 EMA period 기준으로 그룹화되어야 한다.
+
+    이전(01-07): price 외부, period 내부 → Close_11, Close_22, ..., High_11, ...
+    이후(01-09): period 외부, price 내부 → Close_11, High_11, Low_11, Close_22, ...
+    """
+    layout = build_column_layout()
+    diff_cols = [
+        c for c in layout
+        if c.startswith("DIFF_") and not c.endswith(("_median", "_std"))
+    ]
+    expected = [
+        "DIFF_Close_11", "DIFF_High_11", "DIFF_Low_11",
+        "DIFF_Close_22", "DIFF_High_22", "DIFF_Low_22",
+        "DIFF_Close_96", "DIFF_High_96", "DIFF_Low_96",
+        "DIFF_Close_192", "DIFF_High_192", "DIFF_Low_192",
+    ]
+    assert diff_cols == expected, f"DIFF 컬럼 순서 불일치: {diff_cols}"
+
+    # median/std siblings 가 각 base 바로 뒤에 interleave 되어 있는지 확인
+    for base in expected:
+        i = layout.index(base)
+        assert layout[i + 1] == f"{base}_median", (
+            f"{base} 다음 컬럼이 {base}_median 이어야 함, 실제: {layout[i + 1]}"
+        )
+        assert layout[i + 2] == f"{base}_std", (
+            f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
+        )
+
+    # 총 컬럼 수 76 유지
+    assert len(layout) == 76, f"총 컬럼 수 76 이어야 함, 실제: {len(layout)}"
