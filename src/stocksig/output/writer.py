@@ -1,16 +1,17 @@
-"""XlsxWriter Workbook 팩토리 + Format 캐시 (Pattern 8, D-04 + gap-fix 01-06).
+"""XlsxWriter Workbook 팩토리 + Format 캐시 (Pattern 8, D-04 + gap-fix 01-06/01-07).
 
 make_workbook(path) → (Workbook, formats_dict)
 formats_dict 키:
   - (bucket, fmt_type) tuple — bucket ∈ 5 SigmaBucket + 3 TechBucket = 8,
-                                 fmt_type ∈ {"price", "volume", "percent"}
+                                 fmt_type ∈ {"price", "volume", "percent_literal", "percent_ratio"}
   - "header"
-총 8 × 3 + 1 = 25 키. 워크북당 add_format 호출 정확히 25회.
+총 8 × 4 + 1 = 33 키. 워크북당 add_format 호출 정확히 33회.
 
-num_format 매핑:
-  - "price"   → '#,##0.00'   (쉼표 + 소수점 2자리)
-  - "volume"  → '#,##0'      (쉼표 + 정수)
-  - "percent" → '0.00"%"'    (소수점 2자리 + 리터럴 % 접미사, 값 0~100 유지)
+num_format 매핑 (gap-fix 01-07: percent를 두 종류로 분리):
+  - "price"           → '#,##0.00'   (쉼표 + 소수점 2자리)
+  - "volume"          → '#,##0'      (쉼표 + 정수)
+  - "percent_literal" → '0.00"%"'    (값 0~100 그대로 + 리터럴 % — Stoch/RSI 용)
+  - "percent_ratio"   → '0.00%'      (Excel가 값 ×100 — DIFF 비율 용; 저장값 0.0123 → 1.23% 표시)
 """
 
 from __future__ import annotations
@@ -31,15 +32,17 @@ from stocksig.compute.color_rules import (
     TechBucket,
 )
 
-# num_format 문자열 (gap-fix 01-06)
+# num_format 문자열 (gap-fix 01-06/01-07)
 NUM_FORMAT_PRICE = "#,##0.00"
 NUM_FORMAT_VOLUME = "#,##0"
-NUM_FORMAT_PERCENT = '0.00"%"'
+NUM_FORMAT_PERCENT_LITERAL = '0.00"%"'  # 값 0~100 그대로 표시, 리터럴 %
+NUM_FORMAT_PERCENT_RATIO = "0.00%"  # Excel가 자동 ×100, DIFF 비율용
 
 _NUM_FORMAT_MAP = {
     "price": NUM_FORMAT_PRICE,
     "volume": NUM_FORMAT_VOLUME,
-    "percent": NUM_FORMAT_PERCENT,
+    "percent_literal": NUM_FORMAT_PERCENT_LITERAL,
+    "percent_ratio": NUM_FORMAT_PERCENT_RATIO,
 }
 
 # 색 속성 (bucket → dict, num_format 제외)
@@ -62,7 +65,7 @@ def make_workbook(path: Union[str, Path]) -> tuple[xlsxwriter.Workbook, dict]:
     데이터 유지 — 우리 use case는 합리적인 워크북 크기).
 
     Returns:
-        (wb, formats): wb는 xlsxwriter.Workbook, formats는 25키 dict.
+        (wb, formats): wb는 xlsxwriter.Workbook, formats는 33키 dict.
           - formats[(bucket, fmt_type)]: 색 + num_format 결합 Format
           - formats["header"]: bold + center 헤더
     """

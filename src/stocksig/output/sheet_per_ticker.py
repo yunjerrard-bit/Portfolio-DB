@@ -1,9 +1,9 @@
-"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06).
+"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06/01-07).
 
-build_column_layout(df): 124 컬럼 이름 list (D-03 순서).
+build_column_layout(df): 76 컬럼 이름 list (gap-fix 01-07 순서).
 korean_header(col): 원본 컬럼명 → 한국어 헤더.
 KOREAN_HEADERS: 정적 dict alias (korean_header lookup 가능).
-column_num_format(col): col_name → "price" | "volume" | "percent" (gap-fix 01-06).
+column_num_format(col): col_name → "price" | "volume" | "percent_literal" | "percent_ratio".
 write_sheet_for_ticker(wb, formats, ticker, df, scalars): 시트 1개 작성.
 """
 
@@ -19,7 +19,7 @@ from stocksig.compute.color_rules import (
     decide_stoch_bucket,
 )
 
-# --- D-03 컬럼 레이아웃 상수 ----------------------------------------------
+# --- 컬럼 레이아웃 상수 (gap-fix 01-07) ----------------------------------
 _OHLCV = ["Close", "High", "Low", "Volume"]
 _PRICES = ["Close", "High", "Low"]
 _EMA_PERIODS = [11, 22, 96, 192]
@@ -27,42 +27,40 @@ _EMA_PERIODS = [11, 22, 96, 192]
 _PRICE_KR = {"Close": "종가", "High": "고가", "Low": "저가", "Volume": "거래량"}
 
 _VOLUME_COLS = {"Volume", "Volume_median", "Volume_std"}
-_PERCENT_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
+_PERCENT_LITERAL_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
 
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
-    """D-03 124 컬럼 이름 list 반환.
+    """76 컬럼 이름 list 반환 (gap-fix 01-07: Close-EMA-only contract).
 
-    구조: Date + (4 OHLCV × 3) + (12 EMA × 3) + (12 DIFF × 3)
-        + (12 dailychg × 3) + (Stoch_%K, Stoch_%D, RSI)
-    = 1 + 12 + 36 + 36 + 36 + 3 = 124
+    구조: Date + (4 OHLCV × 3) + (4 EMA_Close × 3) + (12 DIFF × 3)
+        + (4 dailychg × 3) + (Stoch_%K, Stoch_%D, RSI)
+    = 1 + 12 + 12 + 36 + 12 + 3 = 76
     """
     layout: list[str] = ["Date"]
-    # 원천 OHLCV (group 1)
+    # 원천 OHLCV (group 1) — 4 × 3 = 12
     for col in _OHLCV:
         layout += [col, f"{col}_median", f"{col}_std"]
-    # 1차 EMA (group 2)
-    for price in _PRICES:
-        for n in _EMA_PERIODS:
-            base = f"EMA_{price}_{n}"
-            layout += [base, f"{base}_median", f"{base}_std"]
-    # 2차 차이 DIFF (group 3)
+    # 1차 EMA — Close만 (group 2) — 4 × 3 = 12
+    for n in _EMA_PERIODS:
+        base = f"EMA_Close_{n}"
+        layout += [base, f"{base}_median", f"{base}_std"]
+    # 2차 DIFF — Close/High/Low × N, 모두 EMA_Close_N 기준 (group 3) — 12 × 3 = 36
     for price in _PRICES:
         for n in _EMA_PERIODS:
             base = f"DIFF_{price}_{n}"
             layout += [base, f"{base}_median", f"{base}_std"]
-    # 2차 EMA 일변동 (group 4)
-    for price in _PRICES:
-        for n in _EMA_PERIODS:
-            base = f"EMA_{price}_{n}_dailychg"
-            layout += [base, f"{base}_median", f"{base}_std"]
+    # 2차 EMA_Close 일변동 (group 4) — 4 × 3 = 12
+    for n in _EMA_PERIODS:
+        base = f"EMA_Close_{n}_dailychg"
+        layout += [base, f"{base}_median", f"{base}_std"]
     # 기술 지표 (group 5)
     layout += ["Stoch_%K", "Stoch_%D", "RSI"]
     return layout
 
 
 def korean_header(col: str) -> str:
-    """원본 컬럼명 → 한국어 헤더 (D-05, SHEET-05)."""
+    """원본 컬럼명 → 한국어 헤더 (D-05, SHEET-05, gap-fix 01-07)."""
     if col == "Date":
         return "날짜"
     if col == "Stoch_%K":
@@ -84,20 +82,17 @@ def korean_header(col: str) -> str:
     if col in _PRICE_KR:
         return _PRICE_KR[col]
 
-    # EMA_{price}_{n}_dailychg
-    if col.startswith("EMA_") and col.endswith("_dailychg"):
-        body = col[len("EMA_") : -len("_dailychg")]
-        # body = "{price}_{n}"
-        price, n = body.rsplit("_", 1)
-        return f"{_PRICE_KR.get(price, price)} EMA{n} 일변동"
+    # EMA_Close_{n}_dailychg → "종가 EMA{n} 일변동"
+    if col.startswith("EMA_Close_") and col.endswith("_dailychg"):
+        n = col[len("EMA_Close_") : -len("_dailychg")]
+        return f"종가 EMA{n} 일변동"
 
-    # EMA_{price}_{n}
-    if col.startswith("EMA_"):
-        body = col[len("EMA_") :]
-        price, n = body.rsplit("_", 1)
-        return f"{_PRICE_KR.get(price, price)} EMA{n}"
+    # EMA_Close_{n} → "종가 EMA{n}"
+    if col.startswith("EMA_Close_"):
+        n = col[len("EMA_Close_") :]
+        return f"종가 EMA{n}"
 
-    # DIFF_{price}_{n}
+    # DIFF_{price}_{n} → "{종가|고가|저가}-EMA{n} 차이"
     if col.startswith("DIFF_"):
         body = col[len("DIFF_") :]
         price, n = body.rsplit("_", 1)
@@ -111,17 +106,21 @@ KOREAN_HEADERS: dict[str, str] = {col: korean_header(col) for col in build_colum
 
 
 def column_num_format(col_name: str) -> str:
-    """컬럼명 → num_format type ("price" | "volume" | "percent").
+    """컬럼명 → num_format type (gap-fix 01-07).
 
-    분류 규칙 (gap-fix 01-06):
+    분류 규칙:
       - Volume 계열 (Volume, Volume_median, Volume_std) → "volume" (#,##0)
-      - Stoch_%K, Stoch_%D, RSI → "percent" (0.00"%")
-      - 그 외 (Close/High/Low + EMA/DIFF/dailychg + 모든 _median/_std) → "price" (#,##0.00)
+      - Stoch_%K, Stoch_%D, RSI → "percent_literal" (0.00"%") — 값 0~100
+      - DIFF_* 와 DIFF_*_median/_std → "percent_ratio" (0.00%) — 값 0~1 비율
+      - 그 외 (Close/High/Low + EMA_Close_N + dailychg + 모든 _median/_std) → "price" (#,##0.00)
     """
     if col_name in _VOLUME_COLS:
         return "volume"
-    if col_name in _PERCENT_COLS:
-        return "percent"
+    if col_name in _PERCENT_LITERAL_COLS:
+        return "percent_literal"
+    # DIFF 계열 — DIFF_, DIFF_*_median, DIFF_*_std 모두 비율
+    if col_name.startswith("DIFF_"):
+        return "percent_ratio"
     return "price"
 
 
@@ -132,7 +131,7 @@ def write_sheet_for_ticker(
     enriched_df: pd.DataFrame,
     scalars: dict[str, dict[str, float]],
 ) -> None:
-    """티커 시트 1개를 D-03 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
+    """티커 시트 1개를 76 컬럼 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
 
     Layout:
       row 0 (A1): ticker (SHEET-02)
@@ -143,7 +142,7 @@ def write_sheet_for_ticker(
 
     각 데이터 셀에 (bucket, fmt_type) Format 적용:
       - bucket: 색 (SigmaBucket / TechBucket / DEFAULT)
-      - fmt_type: column_num_format(col_name) → price/volume/percent
+      - fmt_type: column_num_format(col_name) → price/volume/percent_literal/percent_ratio
     """
     ws = wb.add_worksheet(ticker)
     ws.write(0, 0, ticker)
@@ -158,9 +157,7 @@ def write_sheet_for_ticker(
         if col_name in scalars:
             stats = scalars[col_name]
             fmt_type = column_num_format(col_name)
-            # 3/4행은 통계 스칼라 → 색 없음(DEFAULT) + num_format
-            # OHLCV 컬럼은 SigmaBucket.DEFAULT, 기술지표는 TechBucket.DEFAULT 사용
-            if col_name in _PERCENT_COLS:
+            if col_name in _PERCENT_LITERAL_COLS:
                 default_fmt = formats[(TechBucket.DEFAULT, fmt_type)]
             else:
                 default_fmt = formats[(SigmaBucket.DEFAULT, fmt_type)]
@@ -205,7 +202,6 @@ def write_sheet_for_ticker(
             elif col_name == "RSI":
                 bucket = decide_rsi_bucket(value)
             elif col_name.endswith(("_median", "_std")):
-                # row 단위 _median/_std 값 — 색 없음, num_format만
                 bucket = SigmaBucket.DEFAULT
             else:
                 med = row.get(f"{col_name}_median")
