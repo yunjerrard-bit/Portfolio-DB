@@ -9,6 +9,8 @@ write_sheet_for_ticker(wb, formats, ticker, df, scalars): 시트 1개 작성.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 from stocksig.compute.color_rules import (
@@ -17,7 +19,11 @@ from stocksig.compute.color_rules import (
     decide_rsi_bucket,
     decide_sigma_bucket,
     decide_stoch_bucket,
+    decide_trend_bucket,
 )
+
+# gap-fix 01-11: 정확히 `EMA_Close_{N}` (suffix 없는 값 컬럼)에만 매치
+_EMA_VALUE_RE = re.compile(r"^EMA_Close_\d+$")
 
 # --- 컬럼 레이아웃 상수 (gap-fix 01-07) ----------------------------------
 _OHLCV = ["Close", "High", "Low", "Volume"]
@@ -31,20 +37,20 @@ _PERCENT_LITERAL_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
 
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
-    """76 컬럼 이름 list 반환 (gap-fix 01-07: Close-EMA-only contract).
+    """80 컬럼 이름 list 반환 (gap-fix 01-07/01-11).
 
-    구조: Date + (4 OHLCV × 3) + (4 EMA_Close × 3) + (12 DIFF × 3)
+    구조: Date + (4 OHLCV × 3) + (4 EMA_Close × 4) + (12 DIFF × 3)
         + (4 dailychg × 3) + (Stoch_%K, Stoch_%D, RSI)
-    = 1 + 12 + 12 + 36 + 12 + 3 = 76
+    = 1 + 12 + 16 + 36 + 12 + 3 = 80
     """
     layout: list[str] = ["Date"]
     # 원천 OHLCV (group 1) — 4 × 3 = 12
     for col in _OHLCV:
         layout += [col, f"{col}_median", f"{col}_std"]
-    # 1차 EMA — Close만 (group 2) — 4 × 3 = 12
+    # 1차 EMA — Close만 (group 2) — 4 × 4 = 16 (gap-fix 01-11: + trend)
     for n in _EMA_PERIODS:
         base = f"EMA_Close_{n}"
-        layout += [base, f"{base}_median", f"{base}_std"]
+        layout += [base, f"{base}_median", f"{base}_std", f"{base}_trend"]
     # 2차 DIFF — Close/High/Low × N, 모두 EMA_Close_N 기준 (group 3) — 12 × 3 = 36
     # gap-fix 01-09: EMA period 외부, price 내부 → period로 그룹핑된 순서
     for n in _EMA_PERIODS:
@@ -82,6 +88,11 @@ def korean_header(col: str) -> str:
     # OHLCV 원천
     if col in _PRICE_KR:
         return _PRICE_KR[col]
+
+    # EMA_Close_{n}_trend → "ema{n} 추세" (gap-fix 01-11)
+    if col.startswith("EMA_Close_") and col.endswith("_trend"):
+        n = col[len("EMA_Close_") : -len("_trend")]
+        return f"ema{n} 추세"
 
     # EMA_Close_{n}_dailychg → "종가 EMA{n} 일변동"
     if col.startswith("EMA_Close_") and col.endswith("_dailychg"):
@@ -121,6 +132,9 @@ def column_num_format(col_name: str) -> str:
         return "percent_literal"
     # DIFF 계열 — DIFF_, DIFF_*_median, DIFF_*_std 모두 비율
     if col_name.startswith("DIFF_"):
+        return "percent_ratio"
+    # gap-fix 01-11: EMA_Close_N_trend → 비율 (pct_change)
+    if col_name.endswith("_trend"):
         return "percent_ratio"
     return "price"
 
@@ -202,6 +216,9 @@ def write_sheet_for_ticker(
                 bucket = decide_stoch_bucket(value)
             elif col_name == "RSI":
                 bucket = decide_rsi_bucket(value)
+            elif col_name.endswith("_trend"):
+                # gap-fix 01-11: EMA pct_change → 양수 green / 음수 red
+                bucket = decide_trend_bucket(value)
             elif col_name.endswith(("_median", "_std")):
                 bucket = SigmaBucket.DEFAULT
             else:
@@ -214,9 +231,10 @@ def write_sheet_for_ticker(
 
     ws.set_column(0, len(layout) - 1, 12)
 
-    # gap-fix 01-08: *_median / *_std 컬럼은 기본 숨김 (데이터·서식 그대로, Excel에서 펼치기 가능)
+    # gap-fix 01-08/01-11: *_median, *_std, 그리고 EMA_Close_{N} 값 컬럼도 숨김.
+    # trend / dailychg 등 다른 suffix 는 가시 유지.
     for col_idx, col_name in enumerate(layout):
-        if col_name.endswith(("_median", "_std")):
+        if col_name.endswith(("_median", "_std")) or _EMA_VALUE_RE.match(col_name):
             ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
 
     # gap-fix 01-10: 1~5행(ticker, median, std, blank, 한국어 헤더) 고정 — 스크롤 시 항상 보임
