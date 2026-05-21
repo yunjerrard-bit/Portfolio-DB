@@ -28,23 +28,26 @@ def compute_ema(series: pd.Series, span: int) -> pd.Series:
 
 
 def add_ema_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """입력 df copy + 20 신규 컬럼 (4 EMA + 12 DIFF + 4 dailychg).
+    """입력 df copy + 24 신규 컬럼 (4 EMA + 12 DIFF + 4 dailychg + 4 trend).
 
-    컬럼 명명 (gap-fix 01-07):
+    컬럼 명명 (gap-fix 01-07 + 01-11):
       EMA_Close_{N}             — 종가 EMA, 가격 단위 (4)
       DIFF_{price}_{N}          — (price - EMA_Close_N) / EMA_Close_N, 비율 (12)
       EMA_Close_{N}_dailychg    — EMA_Close_N.diff(), 가격 단위 (4)
+      EMA_Close_{N}_trend       — EMA_Close_N.pct_change(), 비율 (4) [gap-fix 01-11]
 
       price ∈ {Close, High, Low}, N ∈ EMA_PERIODS.
     """
     out = df.copy()
-    # EMA_Close_N + dailychg (4 + 4)
+    # EMA_Close_N + dailychg + trend (4 + 4 + 4)
     for n in EMA_PERIODS:
         ema = compute_ema(out["Close"], n)
         ema_col = f"EMA_Close_{n}"
         chg_col = f"EMA_Close_{n}_dailychg"
+        trend_col = f"EMA_Close_{n}_trend"
         out[ema_col] = ema
         out[chg_col] = ema.diff()
+        out[trend_col] = ema.pct_change()
     # DIFF_{price}_N — 모두 EMA_Close_N 기준, 비율로 저장 (12)
     for price_col in PRICE_COLS:
         for n in EMA_PERIODS:

@@ -71,6 +71,20 @@ def test_no_high_low_ema_columns(mock_ohlcv_df):
         assert f"EMA_Low_{n}" not in out.columns
 
 
+def test_trend_columns_added(mock_ohlcv_df):
+    # gap-fix 01-11: add_ema_columns must add 4 _trend columns = EMA_Close_N.pct_change()
+    out = add_ema_columns(mock_ohlcv_df)
+    for n in EMA_PERIODS:
+        trend_col = f"EMA_Close_{n}_trend"
+        assert trend_col in out.columns, f"missing {trend_col}"
+        ema_col = f"EMA_Close_{n}"
+        pd.testing.assert_series_equal(
+            out[trend_col], out[ema_col].pct_change(), check_names=False
+        )
+    # at least one non-null/non-zero trend value exists
+    assert out["EMA_Close_11_trend"].notna().sum() > 0
+
+
 def test_diff_is_ratio(mock_ohlcv_df):
     # gap-fix 01-07: DIFF는 비율 스케일 — mock df (close~100, high=close*1.02)에서
     # DIFF_High_N이 EMA 수렴 후 작은 양수 (0~0.1 범위) 여야 한다
