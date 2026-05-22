@@ -34,6 +34,29 @@ def stoch_slow(
     )
 
 
+def compute_macd_oscillator(
+    close: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pd.Series:
+    """MACD Oscillator (Histogram) = MACD_line - Signal_line.
+
+    gap-fix 01-14:
+      MACD_line = EMA(close, fast) - EMA(close, slow)
+      Signal    = EMA(MACD_line, signal)
+      OSC       = MACD_line - Signal
+
+    adjust=False (TradingView 호환). 초기 (slow-1) 행 ~ 작은 값 (NaN 없음 — ewm은
+    첫 행도 채움). 의미 있는 값은 ~slow+signal 행 이후.
+    """
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return (macd_line - signal_line).rename("MACD_OSC")
+
+
 def rsi_wilder(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Wilder RSI(period). ewm(alpha=1/period, adjust=False) 동등.
 

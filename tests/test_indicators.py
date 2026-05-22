@@ -9,7 +9,7 @@ import math
 
 import pandas as pd
 
-from stocksig.compute.indicators import rsi_wilder, stoch_slow
+from stocksig.compute.indicators import compute_macd_oscillator, rsi_wilder, stoch_slow
 
 
 def _ohlc(close: list[float], high: list[float], low: list[float]) -> pd.DataFrame:
@@ -83,3 +83,27 @@ def test_rsi_wilder_known_input(rsi_golden):
     df_dn = pd.DataFrame({"Close": [100.0 - i for i in range(30)]})
     rsi_dn = rsi_wilder(df_dn, period=14)
     assert abs(rsi_dn.iloc[-1] - 0.0) < 5.0
+
+
+def test_macd_oscillator():
+    """gap-fix 01-14: MACD-OSC(12, 26, 9) sanity — finite + length 일치."""
+    n = 100
+    close = pd.Series([100.0 + i * 0.5 for i in range(n)])
+    osc = compute_macd_oscillator(close)
+    assert len(osc) == n
+    # 충분히 뒤쪽 (>= slow+signal) 값은 finite
+    assert math.isfinite(osc.iloc[-1])
+    assert osc.name == "MACD_OSC"
+
+    # 단조 상승 입력 → 양수 영역으로 수렴
+    assert osc.iloc[-1] > 0
+
+    # 단조 하락 → 음수
+    close_dn = pd.Series([100.0 - i * 0.5 for i in range(n)])
+    osc_dn = compute_macd_oscillator(close_dn)
+    assert osc_dn.iloc[-1] < 0
+
+    # 상수 → 0
+    close_const = pd.Series([100.0] * n)
+    osc_const = compute_macd_oscillator(close_const)
+    assert abs(osc_const.iloc[-1]) < 1e-9
