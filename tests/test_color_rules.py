@@ -97,3 +97,25 @@ def test_sigma_buckets():
 
     # Sanity: nan helper works as expected
     assert math.isnan(nan)
+
+
+def test_decide_impulse():
+    """gap-fix 01-14: ImpulseBucket — 두 부호 일치 → GREEN/RED, 불일치 → BLUE, NaN → DEFAULT."""
+    from stocksig.compute.color_rules import BLUE_100, BLUE_800, ImpulseBucket, decide_impulse
+
+    assert BLUE_100 == "#BBDEFB"
+    assert BLUE_800 == "#1565C0"
+
+    assert decide_impulse(0.01, 0.5) == ImpulseBucket.GREEN
+    assert decide_impulse(-0.01, -0.5) == ImpulseBucket.RED
+    assert decide_impulse(0.01, -0.5) == ImpulseBucket.BLUE
+    assert decide_impulse(-0.01, 0.5) == ImpulseBucket.BLUE
+    assert decide_impulse(float("nan"), 0.5) == ImpulseBucket.DEFAULT
+    assert decide_impulse(0.01, float("nan")) == ImpulseBucket.DEFAULT
+    assert decide_impulse(None, 0.5) == ImpulseBucket.DEFAULT
+
+    # value 텍스트 검증
+    assert ImpulseBucket.GREEN.value == "녹색"
+    assert ImpulseBucket.RED.value == "적색"
+    assert ImpulseBucket.BLUE.value == "청색"
+    assert ImpulseBucket.DEFAULT.value == ""

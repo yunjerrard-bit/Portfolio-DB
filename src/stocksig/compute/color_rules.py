@@ -21,6 +21,11 @@ RED_900 = "#B71C1C"
 RED_100 = "#FFCDD2"
 DEFAULT_BLACK = "#000000"
 
+# gap-fix 01-14: 임펄스 청색 + 헤더 bg용 BLUE 팔레트
+BLUE_100 = "#BBDEFB"
+BLUE_800 = "#1565C0"
+BLUE_900 = "#0D47A1"
+
 
 class SigmaBucket(Enum):
     """중앙값 ± σ 색 분류 (Core Value 신호)."""
@@ -30,6 +35,15 @@ class SigmaBucket(Enum):
     HARD_GREEN = "hard_green"
     SOFT_RED = "soft_red"
     HARD_RED = "hard_red"
+
+
+class ImpulseBucket(str, Enum):
+    """임펄스 시스템 (gap-fix 01-14). 텍스트 값을 그대로 셀에 표기."""
+
+    DEFAULT = ""
+    GREEN = "녹색"
+    RED = "적색"
+    BLUE = "청색"
 
 
 class TechBucket(Enum):
@@ -102,6 +116,25 @@ def decide_trend_bucket(value) -> TechBucket:
     if value < 0:
         return TechBucket.SOFT_RED
     return TechBucket.DEFAULT
+
+
+def decide_impulse(ema11_trend, macd_osc_diff) -> ImpulseBucket:
+    """임펄스 시스템 (gap-fix 01-14).
+
+    ema_trend, macd_osc_diff 동시 양수 → 녹색 (GREEN)
+    동시 음수 → 적색 (RED)
+    부호 혼합 → 청색 (BLUE)
+    NaN / None → DEFAULT
+    """
+    if _is_nanish(ema11_trend) or _is_nanish(macd_osc_diff):
+        return ImpulseBucket.DEFAULT
+    up_ema = ema11_trend > 0
+    up_osc = macd_osc_diff > 0
+    if up_ema and up_osc:
+        return ImpulseBucket.GREEN
+    if (not up_ema) and (not up_osc):
+        return ImpulseBucket.RED
+    return ImpulseBucket.BLUE
 
 
 def decide_rsi_bucket(value) -> TechBucket:
