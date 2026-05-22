@@ -1,15 +1,17 @@
-"""Walking Skeleton 오케스트레이션 (EXEC-01/02).
+"""Walking Skeleton 오케스트레이션 (EXEC-01/02) — gap-fix 01-14 확장.
 
-Wave 1~3의 모든 공개 시그니처를 한 흐름으로 연결하는 `run()`.
-
-흐름:
-    load_env → read_tickers → 티커별 [fetch_ohlcv → add_ema_columns →
-    add_expanding_stats → cumulative_scalars → stoch_slow + rsi_wilder →
-    write_sheet_for_ticker] → wb.close() → 출력 경로 반환
-
-D-05 로깅 포맷: [LEVEL] YYYY-MM-DD HH:MM:SS | TICKER | 메시지
-main_run 모듈에서는 단계 시작 시 TICKER 자리에 `main`을, 티커별 로그에는
-실제 ticker 심볼을 사용한다.
+Pipeline 순서:
+  1. fetch_ohlcv
+  2. add_pct_change_columns (Close/Volume daily)
+  3. compute_weekly → daily에 concat
+  4. 주봉 pct_change 컬럼 추가
+  5. add_ema_columns (일봉 only)
+  6. compute_macd_oscillator (일/주) + .diff() 사본
+  7. stoch_slow / rsi_wilder (일/주)
+  8. add_rolling_stats(['Close','High','Low'], 200)
+  9. add_expanding_stats(다수의 sigma cols)
+ 10. add_impulse_columns
+ 11. write_sheet_for_ticker
 """
 
 from __future__ import annotations
@@ -18,13 +20,22 @@ import logging
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 from stocksig.compute.ema import add_ema_columns
-from stocksig.compute.indicators import rsi_wilder, stoch_slow
+from stocksig.compute.impulse import add_impulse_columns
+from stocksig.compute.indicators import (
+    compute_macd_oscillator,
+    rsi_wilder,
+    stoch_slow,
+)
 from stocksig.compute.stats import (
     add_expanding_stats,
     add_pct_change_columns,
+    add_rolling_stats,
     cumulative_scalars,
 )
+from stocksig.compute.weekly import compute_weekly
 from stocksig.config import load_env
 from stocksig.io.input import read_tickers
 from stocksig.io.market import fetch_ohlcv
@@ -33,30 +44,48 @@ from stocksig.output.writer import make_workbook
 
 logger = logging.getLogger(__name__)
 
-# --- 데이터 컬럼 (20개) — expanding stats 대상 (gap-fix 01-07 / 01-12 / 01-13) -
-# 4 entries: Close, High, Low, Volume_pct_change (gap-fix 01-13: Volume→Volume_pct_change)
-# 4 EMA_Close + 12 DIFF = 16
-# 총 20
-_OHLCV_DATA: list[str] = ["Close", "High", "Low", "Volume_pct_change"]
+
+_DAILY_OHLC: list[str] = ["Close", "High", "Low"]
 _PRICES: list[str] = ["Close", "High", "Low"]
 _EMA_PERIODS: list[int] = [11, 22, 96, 192]
 
 
 def _build_data_cols() -> list[str]:
-    cols: list[str] = list(_OHLCV_DATA)
-    # EMA_Close_N — Close만 (gap-fix 01-07)
+    """SCALARS 용 컬럼 list (3·4행 + sigma 계산 대상)."""
+    cols: list[str] = list(_DAILY_OHLC)
+    # 주봉 OHLC
+    cols += ["Close_week", "High_week", "Low_week"]
+    # 등락률 일/주
+    cols += [
+        "Close_pct_change",
+        "Close_pct_change_week",
+        "Volume_pct_change",
+        "Volume_pct_change_week",
+    ]
+    # EMA_Close × 4
     for n in _EMA_PERIODS:
         cols.append(f"EMA_Close_{n}")
-    # DIFF — 3 prices × 4 periods, 모두 EMA_Close_N 기준 (비율)
+    # DIFF × 12
     for price in _PRICES:
         for n in _EMA_PERIODS:
             cols.append(f"DIFF_{price}_{n}")
-    # (gap-fix 01-12: dailychg 엔트리 제거 — 컬럼 자체가 없어짐)
     return cols
 
 
 DATA_COLS: list[str] = _build_data_cols()
-assert len(DATA_COLS) == 20, f"DATA_COLS는 20 컬럼이어야 한다 (현재: {len(DATA_COLS)})"
+
+# Expanding stats 적용 컬럼 (rolling 일봉 OHLC 제외) — gap-fix 01-14
+_EXPANDING_COLS: list[str] = [
+    "Close_week",
+    "High_week",
+    "Low_week",
+    "Close_pct_change",
+    "Close_pct_change_week",
+    "Volume_pct_change",
+    "Volume_pct_change_week",
+] + [f"EMA_Close_{n}" for n in _EMA_PERIODS] + [
+    f"DIFF_{price}_{n}" for price in _PRICES for n in _EMA_PERIODS
+]
 
 
 def run(
@@ -64,66 +93,98 @@ def run(
     env_path: str | Path | None = None,
     output_dir: str | Path = "output",
 ) -> Path:
-    """Walking Skeleton 전체 흐름 실행.
-
-    Args:
-        tickers_path: tickers.txt 경로.
-        env_path: .env 경로. None이면 cwd의 .env.
-        output_dir: 출력 디렉터리. 자동 생성.
-
-    Returns:
-        생성된 .xlsx 파일의 절대 경로.
-
-    Raises:
-        SystemExit: 입력/환경 검증 실패 (read_tickers / load_env에서).
-        ValueError: yfinance 빈 응답.
-        YFRateLimitError: 5회 재시도 후에도 rate-limited.
-    """
-    # 1. .env fail-fast (INPUT-05)
+    """Walking Skeleton 전체 흐름 실행 (gap-fix 01-14)."""
     load_env(env_path)
 
-    # 2. 티커 목록 (INPUT-01/02/03)
     tickers = read_tickers(tickers_path)
     logger.info("main | 티커 %d개 로드 완료: %s", len(tickers), ", ".join(tickers))
 
-    # 3. 출력 경로 (OUT-01/02): 같은 날 재실행 시 overwrite
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / f"portfolio_{date.today():%Y%m%d}.xlsx"
 
-    # 4. Workbook + Format 캐시 (Pattern 8)
     wb, formats = make_workbook(output_path)
 
     try:
         for ticker in tickers:
             logger.info("%s | OHLCV 수신 시작", ticker)
-            df = fetch_ohlcv(ticker)  # MKTD-01~03 (내부에서 수신완료 로그)
+            raw = fetch_ohlcv(ticker)
 
-            # 5. EMA + DIFF + trend (20 컬럼) (COMP-01/02/03, gap-fix 01-12)
+            # 1. 일봉 pct_change
+            df = add_pct_change_columns(raw)
+
+            # 2. 주봉 OHLC (ffill) — daily index에 broadcast
+            weekly = compute_weekly(raw)
+            df = pd.concat([df, weekly], axis=1)
+
+            # 3. 주봉 pct_change (broadcast된 컬럼에서 — Friday-to-Friday 차이만 non-zero)
+            df["Close_pct_change_week"] = df["Close_week"].pct_change()
+            df["Volume_pct_change_week"] = df["Volume_week"].pct_change()
+
+            # 4. EMA + DIFF + trend (일봉 only)
             df = add_ema_columns(df)
             logger.info("%s | EMA/DIFF/추세 계산 완료", ticker)
 
-            # 5b. Close_pct_change, Volume_pct_change (gap-fix 01-13)
-            df = add_pct_change_columns(df)
+            # 5. MACD-OSC 일/주 + .diff()
+            df["MACD_OSC"] = compute_macd_oscillator(df["Close"])
+            df["MACD_OSC_week"] = compute_macd_oscillator(df["Close_week"])
+            df["MACD_OSC_diff"] = df["MACD_OSC"].diff()
+            df["MACD_OSC_week_diff"] = df["MACD_OSC_week"].diff()
 
-            # 6. expanding median/std (COMP-04) — Volume_pct_change_median/_std 포함
-            df = add_expanding_stats(df, DATA_COLS)
-
-            # 7. 누적 스칼라 (3행/4행용) (COMP-05)
-            scalars = cumulative_scalars(df, DATA_COLS)
-
-            # 8. 기술 지표 (TECH-01/02)
+            # 6. Stoch / RSI 일/주
             stoch = stoch_slow(df)
             df["Stoch_%K"] = stoch["Stoch_%K"]
             df["Stoch_%D"] = stoch["Stoch_%D"]
+            # 주봉 Stoch (Close_week/High_week/Low_week 입력)
+            weekly_input = pd.DataFrame(
+                {
+                    "Close": df["Close_week"],
+                    "High": df["High_week"],
+                    "Low": df["Low_week"],
+                },
+                index=df.index,
+            )
+            stoch_w = stoch_slow(weekly_input)
+            df["Stoch_%K_week"] = stoch_w["Stoch_%K"]
+            df["Stoch_%D_week"] = stoch_w["Stoch_%D"]
             df["RSI"] = rsi_wilder(df)
-            logger.info("%s | Stoch/RSI 계산 완료", ticker)
+            df["RSI_week"] = rsi_wilder(pd.DataFrame({"Close": df["Close_week"]}, index=df.index))
+            logger.info("%s | Stoch/RSI/MACD 계산 완료", ticker)
 
-            # 9. 시트 작성 (SHEET-01~08, 정적 색 베이킹)
+            # 7. rolling stats (일봉 OHLC 200일)
+            df = add_rolling_stats(df, _DAILY_OHLC, window=200)
+
+            # 8. expanding stats (그 외)
+            df = add_expanding_stats(df, _EXPANDING_COLS)
+
+            # 9. impulse
+            df = add_impulse_columns(df)
+
+            # 10. 스칼라 (3·4행) — DATA_COLS 전체
+            # 일봉 OHLC는 rolling이라 .iloc[-1] (최신 200일 rolling med/std) 사용
+            scalars: dict[str, dict[str, float]] = {}
+            for col in DATA_COLS:
+                if col in _DAILY_OHLC:
+                    med_series = df[f"{col}_median"]
+                    std_series = df[f"{col}_std"]
+                    med = med_series.dropna().iloc[-1] if med_series.dropna().size else None
+                    std = std_series.dropna().iloc[-1] if std_series.dropna().size else None
+                    scalars[col] = {
+                        "median": float(med) if med is not None else None,
+                        "std": float(std) if std is not None else None,
+                    }
+                elif col in df.columns:
+                    s = df[col].dropna()
+                    if s.size:
+                        scalars[col] = {
+                            "median": float(s.median()),
+                            "std": float(s.std()),
+                        }
+
+            # 11. 시트 작성
             write_sheet_for_ticker(wb, formats, ticker, df, scalars)
             logger.info("%s | 시트 작성 완료", ticker)
     finally:
-        # T-01-EXC mitigation: 단일 티커 실패여도 부분 워크북 디스크 저장
         wb.close()
 
     logger.info("main | 워크북 저장: %s", output_path)
