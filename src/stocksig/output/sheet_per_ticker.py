@@ -1,10 +1,14 @@
-"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06/01-07).
+"""티커별 시트 작성 (D-03 컬럼 레이아웃 + 정적 색 베이킹 + num_format 01-06/01-07/01-14).
 
-build_column_layout(df): 68 컬럼 이름 list (gap-fix 01-12 — dailychg 제거 후).
-korean_header(col): 원본 컬럼명 → 한국어 헤더.
-KOREAN_HEADERS: 정적 dict alias (korean_header lookup 가능).
-column_num_format(col): col_name → "price" | "volume" | "percent_literal" | "percent_ratio".
-write_sheet_for_ticker(wb, formats, ticker, df, scalars): 시트 1개 작성.
+gap-fix 01-14: 95 컬럼 (이전 70).
+  - 일봉 OHLC: rolling(200) median/std
+  - 주봉 OHLC: expanding median/std (forward-filled to daily)
+  - Close 등락률(일/주) + Volume(일/주) + Volume 등락률(일/주)
+  - EMA_Close × 4 (값/med/std/trend)
+  - DIFF × 12 (med/std)
+  - Stoch (일/주) %K %D + RSI (일/주)
+  - MACD-OSC (일/주)
+  - Impulse (일/주)
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import re
 import pandas as pd
 
 from stocksig.compute.color_rules import (
+    ImpulseBucket,
     SigmaBucket,
     TechBucket,
     decide_rsi_bucket,
@@ -22,77 +27,128 @@ from stocksig.compute.color_rules import (
     decide_trend_bucket,
 )
 
-# gap-fix 01-11: 정확히 `EMA_Close_{N}` (suffix 없는 값 컬럼)에만 매치
 _EMA_VALUE_RE = re.compile(r"^EMA_Close_\d+$")
 
-# --- 컬럼 레이아웃 상수 (gap-fix 01-07) ----------------------------------
 _PRICES = ["Close", "High", "Low"]
 _EMA_PERIODS = [11, 22, 96, 192]
 
 _PRICE_KR = {"Close": "종가", "High": "고가", "Low": "저가", "Volume": "거래량"}
 
-_VOLUME_COLS = {"Volume"}
-_PERCENT_LITERAL_COLS = {"Stoch_%K", "Stoch_%D", "RSI"}
-# gap-fix 01-13: percent_ratio 컬럼 (Close_pct_change + Volume_pct_change(+_median/_std))
-_PERCENT_RATIO_COLS = {
-    "Close_pct_change",
-    "Volume_pct_change",
-    "Volume_pct_change_median",
-    "Volume_pct_change_std",
-}
-
 
 def build_column_layout(df: pd.DataFrame | None = None) -> list[str]:
-    """70 컬럼 이름 list 반환 (gap-fix 01-07/01-11/01-12/01-13).
+    """gap-fix 01-14: 95 컬럼 이름 list.
 
-    구조: Date + (3 prices × 3) + Close_pct_change + Volume + Volume_pct_change(+_median/_std)
-        + (4 EMA_Close × 4) + (12 DIFF × 3) + (Stoch_%K, Stoch_%D, RSI)
-    = 1 + 9 + 1 + 1 + 3 + 16 + 36 + 3 = 70
-
-    (gap-fix 01-13: Volume_median/_std 제거, Close_pct_change + Volume_pct_change(+_median/_std) 추가.)
+    구조:
+      Date (1)
+      + 일봉 OHLC(3 × 3 = 9) + 주봉 OHLC(3 × 3 = 9)
+      + 일봉 Close_pct_change(+med/std=3) + 주봉 Close_pct_change(+med/std=3)
+      + Volume(일/주 = 2)
+      + 일봉 Volume_pct_change(+med/std=3) + 주봉 Volume_pct_change(+med/std=3)
+      + EMA_Close × 4 (val,med,std,trend) = 16
+      + DIFF × 12 (val,med,std) = 36
+      + Stoch %K/%D 일/주 = 4
+      + RSI 일/주 = 2
+      + MACD_OSC 일/주 = 2
+      + Impulse 일/주 = 2
+      = 1+9+9+3+3+2+3+3+16+36+4+2+2+2 = 95
     """
     layout: list[str] = ["Date"]
-    # OHLCV 가격 그룹 (Close/High/Low) — 3 × 3 = 9
+    # 일봉 OHLC (rolling 200) — 9
     for col in ["Close", "High", "Low"]:
         layout += [col, f"{col}_median", f"{col}_std"]
-    # Close_pct_change (단일, median/std 없음)
-    layout.append("Close_pct_change")
-    # Volume (값) + Volume_pct_change + 그 median/std
-    layout.append("Volume")
-    layout += ["Volume_pct_change", "Volume_pct_change_median", "Volume_pct_change_std"]
-    # 1차 EMA — Close만 (group 2) — 4 × 4 = 16 (gap-fix 01-11: + trend)
+    # 주봉 OHLC (expanding) — 9
+    for col in ["Close_week", "High_week", "Low_week"]:
+        layout += [col, f"{col}_median", f"{col}_std"]
+    # 종가 등락률 일/주 — 6
+    layout += [
+        "Close_pct_change",
+        "Close_pct_change_median",
+        "Close_pct_change_std",
+        "Close_pct_change_week",
+        "Close_pct_change_week_median",
+        "Close_pct_change_week_std",
+    ]
+    # Volume 일/주 — 2
+    layout += ["Volume", "Volume_week"]
+    # Volume 등락률 일/주 — 6
+    layout += [
+        "Volume_pct_change",
+        "Volume_pct_change_median",
+        "Volume_pct_change_std",
+        "Volume_pct_change_week",
+        "Volume_pct_change_week_median",
+        "Volume_pct_change_week_std",
+    ]
+    # EMA_Close × 4 — 16
     for n in _EMA_PERIODS:
         base = f"EMA_Close_{n}"
         layout += [base, f"{base}_median", f"{base}_std", f"{base}_trend"]
-    # 2차 DIFF — Close/High/Low × N, 모두 EMA_Close_N 기준 (group 3) — 12 × 3 = 36
-    # gap-fix 01-09: EMA period 외부, price 내부 → period로 그룹핑된 순서
+    # DIFF (period 외부, price 내부) — 36
     for n in _EMA_PERIODS:
         for price in _PRICES:
             base = f"DIFF_{price}_{n}"
             layout += [base, f"{base}_median", f"{base}_std"]
-    # 기술 지표 (group 4)
-    layout += ["Stoch_%K", "Stoch_%D", "RSI"]
+    # Stoch 일/주 — 4
+    layout += ["Stoch_%K", "Stoch_%D", "Stoch_%K_week", "Stoch_%D_week"]
+    # RSI 일/주 — 2
+    layout += ["RSI", "RSI_week"]
+    # MACD-OSC 일/주 — 2
+    layout += ["MACD_OSC", "MACD_OSC_week"]
+    # Impulse 일/주 — 2
+    layout += ["Impulse_daily", "Impulse_weekly"]
     return layout
 
 
 def korean_header(col: str) -> str:
-    """원본 컬럼명 → 한국어 헤더 (D-05, SHEET-05, gap-fix 01-07)."""
+    """원본 컬럼명 → 한국어 헤더 (gap-fix 01-14: (일)/(주) 접두사)."""
     if col == "Date":
         return "날짜"
-    if col == "Stoch_%K":
-        return "Stoch %K"
-    if col == "Stoch_%D":
-        return "Stoch %D"
+
+    # 임펄스
+    if col == "Impulse_daily":
+        return "(일)임펄스"
+    if col == "Impulse_weekly":
+        return "(주)임펄스"
+
+    # MACD-OSC
+    if col == "MACD_OSC":
+        return "(일)MACD-OSC"
+    if col == "MACD_OSC_week":
+        return "(주)MACD-OSC"
+
+    # RSI
     if col == "RSI":
-        return "RSI"
+        return "(일)RSI"
+    if col == "RSI_week":
+        return "(주)RSI"
 
-    # gap-fix 01-13: pct_change 컬럼 (단독)
+    # Stoch
+    if col == "Stoch_%K":
+        return "(일)Stoch %K"
+    if col == "Stoch_%D":
+        return "(일)Stoch %D"
+    if col == "Stoch_%K_week":
+        return "(주)Stoch %K"
+    if col == "Stoch_%D_week":
+        return "(주)Stoch %D"
+
+    # pct_change (일/주)
     if col == "Close_pct_change":
-        return "종가 등락률"
+        return "(일)종가 등락률"
+    if col == "Close_pct_change_week":
+        return "(주)종가 등락률"
     if col == "Volume_pct_change":
-        return "거래량 등락률"
+        return "(일)거래량 등락률"
+    if col == "Volume_pct_change_week":
+        return "(주)거래량 등락률"
 
-    # *_median / *_std suffix 처리
+    # Volume
+    if col == "Volume":
+        return "(일)거래량"
+    if col == "Volume_week":
+        return "(주)거래량"
+
+    # _median/_std suffix 처리 (재귀 — base 명 lookup)
     if col.endswith("_median"):
         base = col[: -len("_median")]
         return f"{korean_header(base)} 일별 중앙값"
@@ -100,23 +156,33 @@ def korean_header(col: str) -> str:
         base = col[: -len("_std")]
         return f"{korean_header(base)} 일별 표준편차"
 
-    # OHLCV 원천
-    if col in _PRICE_KR:
-        return _PRICE_KR[col]
+    # 일봉 OHLC (200일 접미사 — gap-fix 01-14)
+    if col == "Close":
+        return "(일)종가 (200일)"
+    if col == "High":
+        return "(일)고가 (200일)"
+    if col == "Low":
+        return "(일)저가 (200일)"
 
-    # EMA_Close_{n}_trend → "ema{n} 추세" (gap-fix 01-11)
+    # 주봉 OHLC (week base, prefix 주)
+    if col == "Close_week":
+        return "(주)종가"
+    if col == "High_week":
+        return "(주)고가"
+    if col == "Low_week":
+        return "(주)저가"
+
+    # EMA_Close_{n}_trend (일봉 only)
     if col.startswith("EMA_Close_") and col.endswith("_trend"):
         n = col[len("EMA_Close_") : -len("_trend")]
         return f"ema{n} 추세"
 
-    # (gap-fix 01-12: EMA_Close_{n}_dailychg 분기 제거 — 컬럼 자체가 없어짐)
-
-    # EMA_Close_{n} → "종가 EMA{n}"
+    # EMA_Close_{n} (일봉 only)
     if col.startswith("EMA_Close_"):
         n = col[len("EMA_Close_") :]
         return f"종가 EMA{n}"
 
-    # DIFF_{price}_{n} → "{종가|고가|저가}-EMA{n} 차이"
+    # DIFF_{price}_{n}
     if col.startswith("DIFF_"):
         body = col[len("DIFF_") :]
         price, n = body.rsplit("_", 1)
@@ -125,33 +191,58 @@ def korean_header(col: str) -> str:
     return col
 
 
-# 정적 dict alias: layout 컬럼 → 한국어 (lookup 호환)
 KOREAN_HEADERS: dict[str, str] = {col: korean_header(col) for col in build_column_layout()}
 
 
 def column_num_format(col_name: str) -> str:
-    """컬럼명 → num_format type (gap-fix 01-07).
-
-    분류 규칙:
-      - Volume 계열 (Volume, Volume_median, Volume_std) → "volume" (#,##0)
-      - Stoch_%K, Stoch_%D, RSI → "percent_literal" (0.00"%") — 값 0~100
-      - DIFF_* 와 DIFF_*_median/_std → "percent_ratio" (0.00%) — 값 0~1 비율
-      - 그 외 (Close/High/Low + EMA_Close_N + 모든 _median/_std) → "price" (#,##0.00)
-    """
-    if col_name in _VOLUME_COLS:
+    """컬럼명 → num_format type."""
+    # 임펄스는 텍스트 — write 루프에서 별도 처리. 임시 'price' (사용되지 않음)
+    if col_name in ("Impulse_daily", "Impulse_weekly"):
+        return "price"
+    # Volume 계열 (값) — Volume, Volume_week
+    if col_name in ("Volume", "Volume_week"):
         return "volume"
-    if col_name in _PERCENT_LITERAL_COLS:
-        return "percent_literal"
-    # gap-fix 01-13: Close_pct_change + Volume_pct_change(+_median/_std) 모두 비율
-    if col_name in _PERCENT_RATIO_COLS:
+    # 절대 가격이 아닌 pct_change/percent_ratio 계열
+    if col_name.startswith("Close_pct_change") or col_name.startswith("Volume_pct_change"):
         return "percent_ratio"
-    # DIFF 계열 — DIFF_, DIFF_*_median, DIFF_*_std 모두 비율
+    # Stoch / RSI → literal % (0~100 스케일)
+    if col_name.startswith("Stoch_%") or col_name.startswith("RSI"):
+        return "percent_literal"
+    # MACD-OSC → price (가격 단위)
+    if col_name.startswith("MACD_OSC"):
+        return "price"
+    # DIFF → 비율
     if col_name.startswith("DIFF_"):
         return "percent_ratio"
-    # gap-fix 01-11: EMA_Close_N_trend → 비율 (pct_change)
+    # EMA trend → 비율
     if col_name.endswith("_trend"):
         return "percent_ratio"
     return "price"
+
+
+def _header_fmt_for(col_name: str, formats: dict):
+    """DIFF 그룹별 헤더 bg Format 반환 (gap-fix 01-14)."""
+    if col_name.startswith("DIFF_"):
+        # DIFF_{price}_{n}  또는 DIFF_{price}_{n}_(median|std)
+        # 마지막 숫자 그룹 추출
+        m = re.search(r"_(\d+)(?:_(?:median|std))?$", col_name)
+        if m:
+            n = m.group(1)
+            key = f"header_bg_ema{n}"
+            if key in formats:
+                return formats[key]
+    return formats["header"]
+
+
+def _impulse_fmt(value, formats):
+    """impulse 텍스트 값 → Format 선택."""
+    if value == ImpulseBucket.GREEN.value:
+        return formats["impulse_green"]
+    if value == ImpulseBucket.RED.value:
+        return formats["impulse_red"]
+    if value == ImpulseBucket.BLUE.value:
+        return formats["impulse_blue"]
+    return formats["impulse_default"]
 
 
 def write_sheet_for_ticker(
@@ -161,43 +252,45 @@ def write_sheet_for_ticker(
     enriched_df: pd.DataFrame,
     scalars: dict[str, dict[str, float]],
 ) -> None:
-    """티커 시트 1개를 68 컬럼 레이아웃 + 정적 색 베이킹 + num_format으로 작성.
-
-    Layout:
-      row 0 (A1): ticker (SHEET-02)
-      row 2: 데이터 컬럼 위치에 scalars[col]['median'] (SHEET-03)
-      row 3: scalars[col]['std'] (SHEET-04)
-      row 4: 한국어 헤더 (header Format) (SHEET-05)
-      row 5+: enriched_df.sort_index(ascending=False) 한 행씩 (SHEET-06)
-
-    각 데이터 셀에 (bucket, fmt_type) Format 적용:
-      - bucket: 색 (SigmaBucket / TechBucket / DEFAULT)
-      - fmt_type: column_num_format(col_name) → price/volume/percent_literal/percent_ratio
-    """
+    """티커 시트 1개 — gap-fix 01-14: 95 col + A1 bold 20pt + 헤더 bg + 임펄스."""
     ws = wb.add_worksheet(ticker)
-    ws.write(0, 0, ticker)
+    # gap-fix 01-14: A1 = 티커, bold + 20pt
+    ws.write(0, 0, ticker, formats["a1_title"])
 
     layout = build_column_layout(enriched_df)
-    header_fmt = formats["header"]
 
     # 3·4행: median / std 스칼라 (DEFAULT bucket + 컬럼별 num_format)
     for col_idx, col_name in enumerate(layout):
         if col_name == "Date" or col_name.endswith(("_median", "_std")):
             continue
+        # 임펄스 컬럼은 스칼라 없음
+        if col_name in ("Impulse_daily", "Impulse_weekly"):
+            continue
         if col_name in scalars:
             stats = scalars[col_name]
             fmt_type = column_num_format(col_name)
-            if col_name in _PERCENT_LITERAL_COLS:
+            # Stoch/RSI 는 TechBucket.DEFAULT, 그 외 SigmaBucket.DEFAULT
+            if (
+                col_name.startswith("Stoch_%")
+                or col_name.startswith("RSI")
+            ):
                 default_fmt = formats[(TechBucket.DEFAULT, fmt_type)]
             else:
                 default_fmt = formats[(SigmaBucket.DEFAULT, fmt_type)]
             if "median" in stats and stats["median"] is not None:
-                ws.write(2, col_idx, stats["median"], default_fmt)
+                try:
+                    ws.write(2, col_idx, stats["median"], default_fmt)
+                except Exception:
+                    pass
             if "std" in stats and stats["std"] is not None:
-                ws.write(3, col_idx, stats["std"], default_fmt)
+                try:
+                    ws.write(3, col_idx, stats["std"], default_fmt)
+                except Exception:
+                    pass
 
-    # 5행: 한국어 헤더 (header Format)
+    # 5행: 한국어 헤더 (DIFF 그룹별 bg Format)
     for col_idx, col_name in enumerate(layout):
+        header_fmt = _header_fmt_for(col_name, formats)
         ws.write(4, col_idx, korean_header(col_name), header_fmt)
 
     # 6행+: 날짜 내림차순 데이터
@@ -220,6 +313,16 @@ def write_sheet_for_ticker(
                 continue
 
             value = row[col_name]
+
+            # 임펄스 셀: 텍스트 + 색 Format
+            if col_name in ("Impulse_daily", "Impulse_weekly"):
+                if value is None or (isinstance(value, float) and pd.isna(value)):
+                    ws.write_blank(excel_row, col_idx, None)
+                    continue
+                fmt = _impulse_fmt(value, formats)
+                ws.write_string(excel_row, col_idx, str(value), fmt)
+                continue
+
             if pd.isna(value):
                 ws.write_blank(excel_row, col_idx, None)
                 continue
@@ -227,31 +330,37 @@ def write_sheet_for_ticker(
             fmt_type = column_num_format(col_name)
 
             # 색 결정 → bucket
-            if col_name in ("Stoch_%K", "Stoch_%D"):
+            if col_name in ("Stoch_%K", "Stoch_%D", "Stoch_%K_week", "Stoch_%D_week"):
                 bucket = decide_stoch_bucket(value)
-            elif col_name == "RSI":
+            elif col_name in ("RSI", "RSI_week"):
                 bucket = decide_rsi_bucket(value)
             elif col_name.endswith("_trend"):
-                # gap-fix 01-11: EMA pct_change → 양수 green / 음수 red
                 bucket = decide_trend_bucket(value)
-            elif col_name == "Close_pct_change":
-                # gap-fix 01-13: trend bucket (sign-based)
-                bucket = decide_trend_bucket(value)
-            elif col_name == "Volume":
-                # gap-fix 01-13: Volume 셀 색은 Volume_pct_change 부호 기반 (trend)
-                vpc = row.get("Volume_pct_change")
-                if vpc is None or pd.isna(vpc):
-                    bucket = TechBucket.DEFAULT
-                else:
-                    bucket = decide_trend_bucket(vpc)
-            elif col_name == "Volume_pct_change":
-                # gap-fix 01-13: sigma bucket (4단 ±σ)
-                med = row.get("Volume_pct_change_median")
-                std = row.get("Volume_pct_change_std")
+            elif col_name in ("Close_pct_change", "Close_pct_change_week"):
+                # gap-fix 01-14: σ 신호로 변경
+                med = row.get(f"{col_name}_median")
+                std = row.get(f"{col_name}_std")
                 bucket = decide_sigma_bucket(value, med, std)
+            elif col_name == "Volume":
+                vpc = row.get("Volume_pct_change")
+                bucket = decide_trend_bucket(vpc) if not pd.isna(vpc) else TechBucket.DEFAULT
+            elif col_name == "Volume_week":
+                vpc = row.get("Volume_pct_change_week")
+                bucket = decide_trend_bucket(vpc) if not pd.isna(vpc) else TechBucket.DEFAULT
+            elif col_name in ("Volume_pct_change", "Volume_pct_change_week"):
+                med = row.get(f"{col_name}_median")
+                std = row.get(f"{col_name}_std")
+                bucket = decide_sigma_bucket(value, med, std)
+            elif col_name == "MACD_OSC":
+                d = row.get("MACD_OSC_diff")
+                bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
+            elif col_name == "MACD_OSC_week":
+                d = row.get("MACD_OSC_week_diff")
+                bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
             elif col_name.endswith(("_median", "_std")):
                 bucket = SigmaBucket.DEFAULT
             else:
+                # Close/High/Low (일봉, rolling 200), Close_week/High_week/Low_week, EMA_Close_N
                 med = row.get(f"{col_name}_median")
                 std = row.get(f"{col_name}_std")
                 bucket = decide_sigma_bucket(value, med, std)
@@ -261,11 +370,9 @@ def write_sheet_for_ticker(
 
     ws.set_column(0, len(layout) - 1, 12)
 
-    # gap-fix 01-08/01-11/01-12: *_median, *_std, 그리고 EMA_Close_{N} 값 컬럼도 숨김.
-    # trend 등 다른 suffix 는 가시 유지. (dailychg 컬럼은 01-12에서 제거됨.)
+    # 숨김: *_median, *_std, EMA_Close_{N} 값
     for col_idx, col_name in enumerate(layout):
         if col_name.endswith(("_median", "_std")) or _EMA_VALUE_RE.match(col_name):
             ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
 
-    # gap-fix 01-10: 1~5행(ticker, median, std, blank, 한국어 헤더) 고정 — 스크롤 시 항상 보임
     ws.freeze_panes(5, 0)
