@@ -82,8 +82,8 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     # SHEET-02: A1 == ticker
     assert ws["A1"].value == "AAPL"
 
-    # 컬럼 폭: 68 (gap-fix 01-12: Date + 12 OHLCV + 16 EMA_Close[val,med,std,trend] + 36 DIFF + 3 tech)
-    assert ws.max_column == 70, f"시트 폭은 70여야 한다 (현재: {ws.max_column})"
+    # gap-fix 01-14: 컬럼 폭 95
+    assert ws.max_column == 95, f"시트 폭은 95여야 한다 (현재: {ws.max_column})"
 
     # gap-fix 01-07: 신규 한국어 헤더 검증
     layout = build_column_layout()
@@ -100,11 +100,11 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     assert ws.cell(row=4, column=2).value is not None
     assert isinstance(ws.cell(row=4, column=2).value, (int, float))
 
-    # SHEET-05: row 5 한국어 헤더
+    # SHEET-05: row 5 한국어 헤더 (gap-fix 01-14: (일) prefix + (200일) suffix)
     assert ws.cell(row=5, column=1).value == "날짜"
-    assert ws.cell(row=5, column=2).value == "종가"
-    assert ws.cell(row=5, column=3).value == "종가 일별 중앙값"
-    assert ws.cell(row=5, column=4).value == "종가 일별 표준편차"
+    assert ws.cell(row=5, column=2).value == "(일)종가 (200일)"
+    assert ws.cell(row=5, column=3).value == "(일)종가 (200일) 일별 중앙값"
+    assert ws.cell(row=5, column=4).value == "(일)종가 (200일) 일별 표준편차"
 
     # SHEET-06: row 6+ 데이터 — 가장 최신 날짜 (descending)
     first_date = ws.cell(row=6, column=1).value
@@ -129,15 +129,15 @@ def test_color_at_three_rows(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, 
     wb = openpyxl.load_workbook(output_path)
     ws = wb["AAPL"]
 
-    # mock df로부터 expanding median/std 직접 계산 (Close 컬럼 기준)
+    # gap-fix 01-14: Close median/std 는 rolling(200) — expanding 이 아님
     sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
     close = sorted_asc["Close"]
-    expanding_median = close.expanding().median()
-    expanding_std = close.expanding().std()
+    expanding_median = close.rolling(window=200, min_periods=200).median()
+    expanding_std = close.rolling(window=200, min_periods=200).std()
 
     n = len(sorted_asc)
-    # 3개 인덱스: 가장 오래된(0), 중간, 가장 최신(n-1)
-    indices = [0, n // 2, n - 1]
+    # 3개 인덱스 — gap-fix 01-14: index 0은 rolling(200) NaN 영역이므로 199 이후로 이동
+    indices = [199, n // 2, n - 1]
 
     # 시트는 내림차순 → row 6이 가장 최신 (asc index n-1)
     # row 6+i 가 sorted_asc index n-1-i
@@ -339,13 +339,14 @@ def test_header_freeze_and_colored_bold(
     # (2) 색 있는 Close 셀과 DEFAULT Close 셀을 찾아 bold 검증
     sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
     close = sorted_asc["Close"]
-    expanding_median = close.expanding().median()
-    expanding_std = close.expanding().std()
+    # gap-fix 01-14: Close rolling(200)
+    expanding_median = close.rolling(window=200, min_periods=200).median()
+    expanding_std = close.rolling(window=200, min_periods=200).std()
     n = len(sorted_asc)
 
     colored_cell_addr: str | None = None
     default_cell_addr: str | None = None
-    for asc_idx in range(n):
+    for asc_idx in range(199, n):
         value = close.iloc[asc_idx]
         med = expanding_median.iloc[asc_idx]
         std = expanding_std.iloc[asc_idx]
@@ -407,8 +408,8 @@ def test_diff_columns_ordered_by_period():
             f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
         )
 
-    # 총 컬럼 수 70 (gap-fix 01-13: +Close_pct_change +Volume_pct_change(+_median/_std) -Volume_median/_std)
-    assert len(layout) == 70, f"총 컬럼 수 70 이어야 함, 실제: {len(layout)}"
+    # gap-fix 01-14: 총 컬럼 수 95
+    assert len(layout) == 95, f"총 컬럼 수 95 이어야 함, 실제: {len(layout)}"
 
 
 def test_ema_value_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
@@ -566,7 +567,7 @@ def _is_hidden_factory(ws):
 def test_close_pct_change_visible_and_colored(
     mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
 ):
-    """gap-fix 01-13: Close_pct_change 가시, '0.00%' 포맷, trend bucket 색."""
+    """gap-fix 01-14: Close_pct_change 가시, '0.00%' 포맷, σ bucket 색 (trend 아님)."""
     _setup_mock_yfinance(mocker, mock_ohlcv_df)
     tickers = tmp_tickers_file("AAPL\n")
     env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
@@ -580,35 +581,26 @@ def test_close_pct_change_visible_and_colored(
     excel_col = col_idx + 1
     is_hidden = _is_hidden_factory(ws)
     assert is_hidden(excel_col) is False
-    assert ws.cell(row=5, column=excel_col).value == "종가 등락률"
+    assert ws.cell(row=5, column=excel_col).value == "(일)종가 등락률"
 
-    # mock에서 Close pct_change 재계산
+    # 최신 행 (row 6) num_format 확인
+    cell = ws.cell(row=6, column=excel_col)
+    assert cell.number_format == "0.00%"
+
+    # gap-fix 01-14: σ bucket 색 — 최신 행에서 sigma_bucket 일치 검증
     sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
     cpc = sorted_asc["Close"].pct_change()
+    cpc_med = cpc.expanding().median()
+    cpc_std = cpc.expanding().std()
     n = len(sorted_asc)
-
-    pos_row = neg_row = None
-    for asc_idx in range(n):
-        v = cpc.iloc[asc_idx]
-        if v is None or (isinstance(v, float) and (v != v)):
-            continue
-        excel_row = 6 + ((n - 1) - asc_idx)
-        if v > 0 and pos_row is None:
-            pos_row = (excel_row, v)
-        elif v < 0 and neg_row is None:
-            neg_row = (excel_row, v)
-        if pos_row and neg_row:
-            break
-    assert pos_row and neg_row
-
-    pos_cell = ws.cell(row=pos_row[0], column=excel_col)
-    neg_cell = ws.cell(row=neg_row[0], column=excel_col)
-    assert pos_cell.number_format == "0.00%"
-    assert neg_cell.number_format == "0.00%"
-    pos_hex = _normalize_rgb(pos_cell.font.color.rgb) if pos_cell.font.color else None
-    neg_hex = _normalize_rgb(neg_cell.font.color.rgb) if neg_cell.font.color else None
-    assert pos_hex == GREEN_800.lstrip("#").upper()
-    assert neg_hex == RED_800.lstrip("#").upper()
+    asc_idx = n - 1
+    expected = decide_sigma_bucket(cpc.iloc[asc_idx], cpc_med.iloc[asc_idx], cpc_std.iloc[asc_idx])
+    expected_font = _SIGMA_FONT_HEX[expected]
+    actual_font = _normalize_rgb(cell.font.color.rgb) if cell.font.color else None
+    if expected_font is None:
+        assert actual_font in (None, "000000")
+    else:
+        assert actual_font == expected_font
 
 
 def test_volume_pct_change_sigma_colored(
@@ -628,7 +620,7 @@ def test_volume_pct_change_sigma_colored(
     excel_col = col_idx + 1
     is_hidden = _is_hidden_factory(ws)
     assert is_hidden(excel_col) is False
-    assert ws.cell(row=5, column=excel_col).value == "거래량 등락률"
+    assert ws.cell(row=5, column=excel_col).value == "(일)거래량 등락률"
 
     # 데이터 행 num_format 확인 (충분히 뒤쪽 — non-NaN 행)
     data_cell = ws.cell(row=6, column=excel_col)
@@ -729,3 +721,232 @@ def test_volume_median_std_now_pct_change(
         # 데이터 행 num_format
         cell = ws.cell(row=6, column=excel_col)
         assert cell.number_format == "0.00%"
+
+
+# --- gap-fix 01-14 smoke tests -----------------------------------------------
+
+
+def test_a1_bold_20pt(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: A1 셀 = 티커, bold + 20pt."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+    a1 = ws["A1"]
+    assert a1.value == "AAPL"
+    assert a1.font.b is True
+    assert a1.font.sz == 20
+
+
+def test_ohlc_rolling_200(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: Close_median rolling(200) — 첫 199행 NaN."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    close_med_idx = layout.index("Close_median") + 1
+    n = len(mock_ohlcv_df)
+    # 가장 오래된 행 (asc 0) → excel row 6 + (n-1)
+    oldest_row = 6 + (n - 1)
+    cell_oldest = ws.cell(row=oldest_row, column=close_med_idx)
+    assert cell_oldest.value is None
+
+    # asc_idx = 199 → excel row 6 + (n - 1 - 199)
+    row_at_199 = 6 + (n - 1 - 199)
+    cell_at_199 = ws.cell(row=row_at_199, column=close_med_idx)
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    close = sorted_asc["Close"]
+    expected = close.rolling(window=200, min_periods=200).median().iloc[199]
+    assert cell_at_199.value is not None
+    assert abs(float(cell_at_199.value) - float(expected)) < 1e-6
+
+
+def test_weekly_columns_present_and_ffilled(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-14: Close_week ffilled — 인접 행에 동일값 존재."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    for col in ["Close_week", "High_week", "Low_week", "Volume_week"]:
+        assert col in layout
+
+    cw_idx = layout.index("Close_week") + 1
+    vals = [ws.cell(row=6 + i, column=cw_idx).value for i in range(6)]
+    vs = [v for v in vals if v is not None]
+    assert len(vs) >= 2
+    # 적어도 한 쌍의 인접 값이 동일 (forward-fill 결과)
+    assert any(vs[i] == vs[i + 1] for i in range(len(vs) - 1))
+
+
+def test_macd_osc_columns(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: MACD_OSC 일/주 finite."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    for col in ["MACD_OSC", "MACD_OSC_week"]:
+        idx = layout.index(col) + 1
+        cell = ws.cell(row=6, column=idx)
+        assert cell.value is not None
+        assert isinstance(cell.value, (int, float))
+
+
+def test_macd_osc_color_by_diff_sign(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """gap-fix 01-14: MACD_OSC 셀 색 = MACD_OSC.diff() 부호 (trend bucket)."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    idx = layout.index("MACD_OSC") + 1
+
+    from stocksig.compute.indicators import compute_macd_oscillator
+    sorted_asc = mock_ohlcv_df.sort_index(ascending=True)
+    osc = compute_macd_oscillator(sorted_asc["Close"])
+    osc_diff = osc.diff()
+    n = len(sorted_asc)
+
+    pos_row = neg_row = None
+    for asc_idx in range(50, n):
+        v = osc_diff.iloc[asc_idx]
+        if v is None or (isinstance(v, float) and (v != v)):
+            continue
+        excel_row = 6 + ((n - 1) - asc_idx)
+        if v > 0 and pos_row is None:
+            pos_row = excel_row
+        elif v < 0 and neg_row is None:
+            neg_row = excel_row
+        if pos_row and neg_row:
+            break
+    assert pos_row and neg_row
+
+    pos_cell = ws.cell(row=pos_row, column=idx)
+    neg_cell = ws.cell(row=neg_row, column=idx)
+    pos_hex = _normalize_rgb(pos_cell.font.color.rgb) if pos_cell.font.color else None
+    neg_hex = _normalize_rgb(neg_cell.font.color.rgb) if neg_cell.font.color else None
+    assert pos_hex == GREEN_800.lstrip("#").upper()
+    assert neg_hex == RED_800.lstrip("#").upper()
+
+
+def test_impulse_cells(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: Impulse_daily 셀 텍스트 + 색."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    idx = layout.index("Impulse_daily") + 1
+    n = len(mock_ohlcv_df)
+
+    expected = {
+        "녹색": ("2E7D32", "C8E6C9"),
+        "적색": ("C62828", "FFCDD2"),
+        "청색": ("1565C0", "BBDEFB"),
+    }
+
+    found = False
+    for r in range(6, 6 + min(200, n)):
+        cell = ws.cell(row=r, column=idx)
+        v = cell.value
+        if v in expected:
+            font_hex = _normalize_rgb(cell.font.color.rgb) if cell.font.color else None
+            fill = cell.fill
+            fill_hex = None
+            if fill is not None and fill.fgColor is not None:
+                if getattr(fill.fgColor, "type", None) == "rgb":
+                    fill_hex = _normalize_rgb(fill.fgColor.rgb)
+            exp_font, exp_fill = expected[v]
+            assert font_hex == exp_font
+            assert fill_hex == exp_fill
+            assert cell.font.b is True
+            found = True
+            break
+    assert found, "Impulse 텍스트 셀을 찾지 못했다"
+
+
+def test_diff_block_header_bg(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: DIFF 4 그룹 헤더 bg 4가지."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    expected = {
+        11: "BDD7EE",
+        22: "F8CBAD",
+        96: "E2EFDA",
+        192: "E1BEE7",
+    }
+    for n, exp_hex in expected.items():
+        col_name = f"DIFF_Close_{n}"
+        col_idx = layout.index(col_name) + 1
+        cell = ws.cell(row=5, column=col_idx)
+        fill = cell.fill
+        actual = None
+        if fill is not None and fill.fgColor is not None:
+            if getattr(fill.fgColor, "type", None) == "rgb":
+                actual = _normalize_rgb(fill.fgColor.rgb)
+        assert actual == exp_hex, (
+            f"DIFF_Close_{n} 헤더 bg 불일치: expected={exp_hex}, actual={actual}"
+        )
+
+
+def test_daily_weekly_pairs(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
+    """gap-fix 01-14: 일/주 쌍 컬럼 + (일)/(주) prefix 헤더."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file("EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n")
+
+    output_path = run(tickers, env, tmp_path / "output")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["AAPL"]
+
+    layout = build_column_layout()
+    pairs = [
+        ("Stoch_%K", "Stoch_%K_week"),
+        ("Stoch_%D", "Stoch_%D_week"),
+        ("RSI", "RSI_week"),
+        ("MACD_OSC", "MACD_OSC_week"),
+        ("Impulse_daily", "Impulse_weekly"),
+    ]
+    for d, w in pairs:
+        assert d in layout
+        assert w in layout
+        d_hdr = ws.cell(row=5, column=layout.index(d) + 1).value
+        w_hdr = ws.cell(row=5, column=layout.index(w) + 1).value
+        assert d_hdr is not None and "(일)" in d_hdr, f"{d} header: {d_hdr}"
+        assert w_hdr is not None and "(주)" in w_hdr, f"{w} header: {w_hdr}"
