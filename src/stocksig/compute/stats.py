@@ -33,6 +33,26 @@ def add_expanding_stats(df: pd.DataFrame, data_cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def add_rolling_stats(
+    df: pd.DataFrame, data_cols: list[str], window: int = 200
+) -> pd.DataFrame:
+    """각 col별 {col}_median, {col}_std 신규 컬럼 추가 (rolling window).
+
+    gap-fix 01-14: 일봉 OHLC(Close/High/Low)는 직전 `window`일 rolling.
+    min_periods=window → 첫 (window-1) 행은 NaN.
+    ddof=1 (pandas default).
+    """
+    out = df.copy()
+    for col in data_cols:
+        out[f"{col}_median"] = (
+            out[col].rolling(window=window, min_periods=window).median()
+        )
+        out[f"{col}_std"] = (
+            out[col].rolling(window=window, min_periods=window).std()
+        )
+    return out
+
+
 def cumulative_scalars(
     df: pd.DataFrame, data_cols: list[str]
 ) -> dict[str, dict[str, float]]:
