@@ -22,9 +22,13 @@ from typing import Union
 import xlsxwriter
 
 from stocksig.compute.color_rules import (
+    BLUE_100,
+    BLUE_800,
+    BLUE_900,
     GREEN_100,
     GREEN_800,
     GREEN_900,
+    ImpulseBucket,
     RED_100,
     RED_800,
     RED_900,
@@ -82,4 +86,32 @@ def make_workbook(path: Union[str, Path]) -> tuple[xlsxwriter.Workbook, dict]:
             formats[(bucket, fmt_type)] = wb.add_format(props)
 
     formats["header"] = wb.add_format({"bold": True, "align": "center"})
+
+    # gap-fix 01-14: A1 ticker 셀 (bold + 20pt)
+    formats["a1_title"] = wb.add_format({"bold": True, "font_size": 20})
+
+    # gap-fix 01-14: 헤더 bg 4 variants (DIFF 그룹 4 EMA period)
+    _HEADER_BG = {
+        "header_bg_ema11": "#BDD7EE",  # 바다색 (60%)
+        "header_bg_ema22": "#F8CBAD",  # 주황 (60%)
+        "header_bg_ema96": "#E2EFDA",  # 황록 (60%)
+        "header_bg_ema192": "#E1BEE7",  # 자주 (60%)
+    }
+    for key, bg in _HEADER_BG.items():
+        formats[key] = wb.add_format(
+            {"bold": True, "align": "center", "bg_color": bg}
+        )
+
+    # gap-fix 01-14: 임펄스 3 variants + DEFAULT
+    formats["impulse_green"] = wb.add_format(
+        {"bold": True, "font_color": GREEN_800, "bg_color": GREEN_100, "align": "center"}
+    )
+    formats["impulse_red"] = wb.add_format(
+        {"bold": True, "font_color": RED_800, "bg_color": RED_100, "align": "center"}
+    )
+    formats["impulse_blue"] = wb.add_format(
+        {"bold": True, "font_color": BLUE_800, "bg_color": BLUE_100, "align": "center"}
+    )
+    formats["impulse_default"] = wb.add_format({"align": "center"})
+
     return wb, formats
