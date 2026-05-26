@@ -79,7 +79,12 @@ def make_workbook(path: Union[str, Path]) -> tuple[xlsxwriter.Workbook, dict]:
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    wb = xlsxwriter.Workbook(str(p), {"constant_memory": False})
+    # nan_inf_to_errors: 2026-05-26 hotfix — IPO 직후 종목의 0-나누기 등으로
+    # 발생하는 NaN/Inf가 셀에 도달해도 TypeError 대신 Excel #NUM!/#DIV/0! 셀로 폴백.
+    # 1차 방어는 sheet_per_ticker.py의 pd.isna() / math.isinf() 필터.
+    wb = xlsxwriter.Workbook(
+        str(p), {"constant_memory": False, "nan_inf_to_errors": True}
+    )
 
     formats: dict = {}
     for bucket, color_props in _COLOR_PROPS.items():

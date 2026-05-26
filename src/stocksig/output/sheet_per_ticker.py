@@ -13,6 +13,7 @@ gap-fix 01-14: 95 컬럼 (이전 70).
 
 from __future__ import annotations
 
+import math
 import re
 
 import pandas as pd
@@ -324,6 +325,11 @@ def write_sheet_for_ticker(
                 continue
 
             if pd.isna(value):
+                ws.write_blank(excel_row, col_idx, None)
+                continue
+            # 2026-05-26 hotfix: 단축 히스토리 종목(예: AEVA)의 일부 계산이
+            # 0으로 나누기 → Inf를 생성. XlsxWriter는 Inf를 거부하므로 빈 셀로.
+            if isinstance(value, float) and math.isinf(value):
                 ws.write_blank(excel_row, col_idx, None)
                 continue
 
