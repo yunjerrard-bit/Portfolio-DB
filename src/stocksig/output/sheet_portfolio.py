@@ -1,0 +1,238 @@
+"""Phase 2 Wave 3 (02-03): 통합 포트폴리오 시트 ("시트1") writer.
+
+D-02 (단일 색 결정 경로 = compute.color_rules), D-03 (실패 티커 행),
+D-08 (15 컬럼 레이아웃), PORT-02/03/04/06/07/08, TECH-07.
+
+스탠드얼론 — `(wb, formats, results, failures, input_order)` 만 받아 시트 하나를
+쓴다. Phase 1 sheet_per_ticker.py 는 건드리지 않는다.
+
+VALIDATION 매핑 결정: 시트 이름은 한글 literal `"시트1"`로 고정한다
+(CONTEXT.md "시트1" 표기와 일치).
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime
+
+import pandas as pd
+import xlsxwriter
+
+from stocksig.compute.color_rules import (
+    SigmaBucket,
+    TechBucket,
+    decide_rsi_bucket,
+    decide_sigma_bucket,
+    decide_stoch_bucket,
+)
+from stocksig.runner import TickerFailure, TickerResult
+
+logger = logging.getLogger(__name__)
+
+# 15 컬럼 (D-08).
+PORTFOLIO_COLUMNS: list[str] = [
+    "티커",
+    "시장",
+    "티어",
+    "산업",
+    "최신 종가",
+    "전일 등락률",
+    "DIFF Close vs EMA11",
+    "DIFF Close vs EMA22",
+    "DIFF Close vs EMA96",
+    "DIFF Close vs EMA192",
+    "거래량",
+    "(일)Stoch %K",
+    "(일)RSI",
+    "(일)임펄스",
+    "(주)임펄스",
+]
+
+_SHEET_NAME = "시트1"
+_EMA_PERIODS = (11, 22, 96, 192)
+_FORBIDDEN_SHEET_CHARS = re.compile(r"[\[\]:\*\?/\\]")
+
+
+# ---------------- helpers --------------------------------------------------
+
+
+def _sanitize_sheet_name(name: str) -> str:
+    """Excel 금지 문자 제거 + 31자 truncate. RESEARCH Pattern 5."""
+    cleaned = _FORBIDDEN_SHEET_CHARS.sub("_", name)
+    return cleaned[:31]
+
+
+def _internal_link(ticker: str) -> str:
+    """티커 → internal hyperlink target (single-quote 항상 wrap — KR `.KS`/`.KQ` 호환)."""
+    return f"internal:'{_sanitize_sheet_name(ticker)}'!A1"
+
+
+def _nan(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _impulse_fmt(value, formats):
+    if value == "녹색":
+        return formats["impulse_green"]
+    if value == "적색":
+        return formats["impulse_red"]
+    if value == "청색":
+        return formats["impulse_blue"]
+    return formats["impulse_default"]
+
+
+# ---------------- row writers ---------------------------------------------
+
+
+def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
+    """시트1 성공 티커 행."""
+    last = res.enriched_df.iloc[-1]
+    spec = res.spec
+
+    # col 0: 티커 (hyperlink)
+    ws.write_url(
+        row,
+        0,
+        _internal_link(spec.symbol),
+        cell_format=formats[(SigmaBucket.DEFAULT, "price")],
+        string=spec.symbol,
+    )
+    # col 1: 시장
+    ws.write_string(row, 1, res.market)
+    # col 2: 티어
+    ws.write_string(row, 2, spec.tier or "")
+    # col 3: 산업
+    ws.write_string(row, 3, spec.industry or "")
+
+    # col 4: 최신 종가
+    close = last.get("Close")
+    if not _nan(close):
+        ws.write_number(
+            row, 4, float(close), formats[(SigmaBucket.DEFAULT, "price")]
+        )
+
+    # col 5: 전일 등락률 (Close_pct_change σ-bucket)
+    cpc = last.get("Close_pct_change")
+    if not _nan(cpc):
+        bucket = decide_sigma_bucket(
+            cpc, last.get("Close_pct_change_median"), last.get("Close_pct_change_std")
+        )
+        ws.write_number(row, 5, float(cpc), formats[(bucket, "percent_ratio")])
+
+    # cols 6..9: DIFF EMA{11,22,96,192} (D-02 = decide_sigma_bucket(DIFF, med, std))
+    for i, n in enumerate(_EMA_PERIODS):
+        diff_val = last.get(f"DIFF_Close_{n}")
+        diff_med = last.get(f"DIFF_Close_{n}_median")
+        diff_std = last.get(f"DIFF_Close_{n}_std")
+        if _nan(diff_val):
+            continue
+        bucket = decide_sigma_bucket(diff_val, diff_med, diff_std)
+        ws.write_number(
+            row, 6 + i, float(diff_val), formats[(bucket, "percent_ratio")]
+        )
+
+    # col 10: 거래량 (Volume) — 색은 Volume_pct_change σ-bucket (PORT-06)
+    volume = last.get("Volume")
+    if not _nan(volume):
+        vpc = last.get("Volume_pct_change")
+        vpc_med = last.get("Volume_pct_change_median")
+        vpc_std = last.get("Volume_pct_change_std")
+        if _nan(vpc):
+            bucket = SigmaBucket.DEFAULT
+        else:
+            bucket = decide_sigma_bucket(vpc, vpc_med, vpc_std)
+        ws.write_number(row, 10, float(volume), formats[(bucket, "volume")])
+
+    # col 11: (일)Stoch %K
+    stoch = last.get("Stoch_%K")
+    if not _nan(stoch):
+        bucket_t = decide_stoch_bucket(stoch)
+        ws.write_number(row, 11, float(stoch), formats[(bucket_t, "percent_literal")])
+
+    # col 12: (일)RSI
+    rsi = last.get("RSI")
+    if not _nan(rsi):
+        bucket_t = decide_rsi_bucket(rsi)
+        ws.write_number(row, 12, float(rsi), formats[(bucket_t, "percent_literal")])
+
+    # col 13: (일)임펄스
+    imp_d = last.get("Impulse_daily")
+    if not _nan(imp_d) and imp_d:
+        ws.write_string(row, 13, str(imp_d), _impulse_fmt(imp_d, formats))
+
+    # col 14: (주)임펄스
+    imp_w = last.get("Impulse_weekly")
+    if not _nan(imp_w) and imp_w:
+        ws.write_string(row, 14, str(imp_w), _impulse_fmt(imp_w, formats))
+
+
+def _write_failure_row(ws, row: int, fail: TickerFailure, formats: dict) -> None:
+    """D-03: 실패 티커 행 — italic + pastel red marker."""
+    marker = formats["failed_row_marker"]
+    ws.write_string(row, 0, fail.spec.symbol, marker)
+    ws.write_string(row, 1, "?", marker)
+    # cols 2..13 비워둠.
+    ws.write_string(row, 14, f"실패: {fail.reason}", marker)
+
+
+# ---------------- main entry -----------------------------------------------
+
+
+def write_portfolio_sheet(
+    wb: xlsxwriter.Workbook,
+    formats: dict,
+    results: list[TickerResult],
+    failures: list[TickerFailure],
+    input_order: list[str],
+    now: datetime | None = None,
+) -> None:
+    """시트1 (포트폴리오 통합) 작성.
+
+    Args:
+        wb: 활성 xlsxwriter Workbook.
+        formats: `make_workbook` 의 44키 Format 캐시.
+        results: `runner.run_all` 의 성공 리스트.
+        failures: `runner.run_all` 의 실패 리스트.
+        input_order: `tickers.txt` 원본 순서의 symbol 리스트. 행은 이 순서를 따른다
+            (PORT-02 — as_completed 순이 아님).
+        now: A1 실행 시각 (테스트 주입용). None → `datetime.now()`.
+    """
+    ws = wb.add_worksheet(_SHEET_NAME)
+    ws.set_column(0, len(PORTFOLIO_COLUMNS) - 1, 14)
+
+    # Row 1 (A1) — 실행 시각 (PORT-08)
+    now = now or datetime.now()
+    ws.write(0, 0, f"실행 시각: {now:%Y-%m-%d %H:%M:%S}", formats["timestamp"])
+
+    # Row 5 (index 4) — 한국어 헤더 (bold + center)
+    for col_idx, name in enumerate(PORTFOLIO_COLUMNS):
+        ws.write(4, col_idx, name, formats["header"])
+
+    # 성공 행 — input_order 보존 (PORT-02)
+    by_sym = {r.spec.symbol: r for r in results}
+    cursor = 5
+    for sym in input_order:
+        res = by_sym.get(sym)
+        if res is None:
+            continue
+        _write_success_row(ws, cursor, res, formats)
+        cursor += 1
+
+    # 실패 행 — input_order 보존, 성공행 다음에 추가 (D-03)
+    fail_by_sym = {f.spec.symbol: f for f in failures}
+    for sym in input_order:
+        fail = fail_by_sym.get(sym)
+        if fail is None:
+            continue
+        _write_failure_row(ws, cursor, fail, formats)
+        cursor += 1
+
+    ws.freeze_panes(5, 1)
