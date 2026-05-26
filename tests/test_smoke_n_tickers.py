@@ -144,8 +144,8 @@ def test_failed_ticker_in_sheet1_only(
 def test_partial_data_marked_failure(
     mock_pipeline_env, tmp_path, env_file
 ):
-    """D-06: <50% (1250 rows 미만) 은 시트1 실패 행 `부분 데이터:`."""
-    mock_pipeline_env["rows_per"]["TINY"] = 800  # < 1250
+    """완화된 임계 (2026-05-26): <20 rows만 실패. 10 rows → 시트1 실패 행 `데이터 부족:`."""
+    mock_pipeline_env["rows_per"]["TINY"] = 10  # < 20
     tickers = tmp_path / "tickers.txt"
     tickers.write_text("AAPL\nTINY\n", encoding="utf-8")
 
@@ -158,13 +158,13 @@ def test_partial_data_marked_failure(
     for row in ws.iter_rows(min_row=6, values_only=True):
         if row and row[0] == "TINY":
             assert any(
-                isinstance(c, str) and c.startswith("실패: 부분 데이터")
+                isinstance(c, str) and c.startswith("실패: 데이터 부족")
                 for c in row
                 if c
             ), f"TINY 행: {row}"
             found = True
             break
-    assert found, "TINY (부분 데이터) 실패 행이 시트1 에 없다"
+    assert found, "TINY (데이터 부족) 실패 행이 시트1 에 없다"
 
 
 def test_cache_hit_on_second_run(

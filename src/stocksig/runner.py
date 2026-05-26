@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_WORKERS = 4
 _EXPECTED_TRADING_DAYS = 2500
-_PARTIAL_THRESHOLD = 0.5  # D-06: <50% → 실패
+# 임계 완화 (2026-05-26): 50% → 20 거래일 절대값.
+# 사용자 결정: 최근 IPO/스핀오프 종목도 가진 데이터만큼 분석. 부족한 지표는 NaN으로 자동 표시.
+_MIN_TRADING_DAYS = 20
 
 
 @dataclass
@@ -47,11 +49,14 @@ class TickerFailure:
 
 
 def _validate_row_count(ticker: str, df: pd.DataFrame) -> str | None:
-    """행 수가 50% threshold (D-06) 미만이면 한국어 reason 반환, 아니면 None."""
+    """행 수가 최소 임계(20 거래일) 미만이면 한국어 reason 반환, 아니면 None.
+
+    완화된 임계 (2026-05-26): IPO 직후 종목도 가진 데이터만큼 분석한다.
+    EMA192/rolling(200) 같은 장기 지표는 부족 시 자동 NaN으로 표시된다.
+    """
     n = len(df)
-    if n < _EXPECTED_TRADING_DAYS * _PARTIAL_THRESHOLD:
-        pct = 100 * n / _EXPECTED_TRADING_DAYS
-        return f"부분 데이터: {n} 거래일 (예상 {_EXPECTED_TRADING_DAYS}의 {pct:.0f}%)"
+    if n < _MIN_TRADING_DAYS:
+        return f"데이터 부족: {n} 거래일 (최소 {_MIN_TRADING_DAYS} 필요)"
     return None
 
 

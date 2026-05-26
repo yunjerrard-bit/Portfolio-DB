@@ -74,21 +74,21 @@ def test_network_error_isolated():
 
 
 def test_partial_data_marked_failure():
-    # D-06: 1000 rows (40% of 2500, below 50% threshold) → failure
-    specs = [TickerSpec("AAPL"), TickerSpec("PARTIAL")]
+    # 완화된 임계 (2026-05-26): 20 거래일 미만만 실패. 10 rows → 실패.
+    # 1000 rows 같은 IPO 직후 종목은 이제 정상 처리 (지표는 자동 NaN).
+    specs = [TickerSpec("AAPL"), TickerSpec("TINY")]
 
     def pipeline(sym: str) -> pd.DataFrame:
-        if sym == "PARTIAL":
-            return _make_df(1000)
+        if sym == "TINY":
+            return _make_df(10)
         return _make_df(2500)
 
     results, failures = run_all(specs, _classify, pipeline)
     assert len(results) == 1
     assert len(failures) == 1
-    assert failures[0].spec.symbol == "PARTIAL"
-    assert failures[0].reason.startswith("부분 데이터:")
-    assert "1000 거래일" in failures[0].reason
-    assert "40%" in failures[0].reason
+    assert failures[0].spec.symbol == "TINY"
+    assert failures[0].reason.startswith("데이터 부족:")
+    assert "10 거래일" in failures[0].reason
 
 
 def test_korean_progress_log(caplog):
