@@ -11,10 +11,17 @@ dependencies = [
     "XlsxWriter>=3.2",
     "tenacity>=9.0",
     "python-dotenv>=1.0",
+    "diskcache>=5.6",
+    "pyrate-limiter>=3",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-mock", "openpyxl"]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock",
+    "openpyxl",
+    "freezegun>=1.5.5",
+]
 
 [build-system]
 requires = ["hatchling"]
