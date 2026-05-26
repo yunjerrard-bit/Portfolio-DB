@@ -5,7 +5,10 @@ formats_dict 키:
   - (bucket, fmt_type) tuple — bucket ∈ 5 SigmaBucket + 3 TechBucket = 8,
                                  fmt_type ∈ {"price", "volume", "percent_literal", "percent_ratio"}
   - "header"
-총 8 × 4 + 1 = 33 키. 워크북당 add_format 호출 정확히 33회.
+총 8 × 4 + 1 = 33 키 (Phase 1 01-06).
+gap-fix 01-14: + a1_title + header_bg×4 + impulse×4 = 42 키.
+Phase 2 02-03: + failed_row_marker + timestamp = 44 키.
+워크북당 add_format 호출 정확히 44회.
 
 num_format 매핑 (gap-fix 01-07: percent를 두 종류로 분리):
   - "price"           → '#,##0.00'   (쉼표 + 소수점 2자리)
@@ -113,5 +116,17 @@ def make_workbook(path: Union[str, Path]) -> tuple[xlsxwriter.Workbook, dict]:
         {"bold": True, "font_color": BLUE_800, "bg_color": BLUE_100, "align": "center"}
     )
     formats["impulse_default"] = wb.add_format({"align": "center"})
+
+    # Phase 2 02-03 (D-03): 시트1 실패 티커 행 마커 — italic + pastel red
+    formats["failed_row_marker"] = wb.add_format(
+        {
+            "italic": True,
+            "font_color": RED_800,  # #C62828
+            "bg_color": "#FFEBEE",  # Material Design RED 50 (pastel pink)
+            "align": "left",
+        }
+    )
+    # Phase 2 02-03 (PORT-08): 시트1 A1 실행 시각
+    formats["timestamp"] = wb.add_format({"italic": True, "font_size": 12})
 
     return wb, formats
