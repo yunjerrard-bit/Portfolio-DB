@@ -53,13 +53,20 @@ def main() -> int:
         default="output",
         help="출력 디렉터리 (default: output/)",
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="시트1(통합 포트폴리오)만 작성하고 종목별 시트는 생략",
+    )
     args = parser.parse_args()
 
     # 늦은 import: argparse --help가 의존성 import 전에 동작하도록
     from stocksig.main_run import run
 
     try:
-        path = run(args.tickers, args.env, args.output_dir)
+        path = run(
+            args.tickers, args.env, args.output_dir, summary_only=args.summary_only
+        )
     except SystemExit:
         raise
     except Exception:

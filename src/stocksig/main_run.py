@@ -180,11 +180,14 @@ def run(
     tickers_path: str | Path = "tickers.txt",
     env_path: str | Path | None = None,
     output_dir: str | Path = "output",
+    summary_only: bool = False,
 ) -> Path:
     """2-pass 멀티 티커 오케스트레이션 — PORT-01 시트1 first.
 
     PASS 1: parallel fetch+compute via `runner.run_all`.
     PASS 2: write 시트1 then per-ticker sheets in input order.
+
+    summary_only=True 이면 시트1만 작성하고 종목별 시트는 생략 (빠른 통합 보기용).
     """
     load_env(env_path)
 
@@ -207,17 +210,20 @@ def run(
         # ★ 시트1 FIRST (PORT-01 / RESEARCH L-05)
         write_portfolio_sheet(wb, formats, results, failures, input_order)
 
-        # 입력 순서로 각 티커 시트
-        by_symbol = {r.spec.symbol: r for r in results}
-        for sym in input_order:
-            res = by_symbol.get(sym)
-            if res is None:
-                continue
-            scalars = res.enriched_df.attrs.get("scalars", {})
-            write_sheet_for_ticker(
-                wb, formats, res.spec.symbol, res.enriched_df, scalars
-            )
-            logger.info("%s | 시트 작성 완료", res.spec.symbol)
+        if summary_only:
+            logger.info("main | summary_only 모드 — 종목별 시트 생략")
+        else:
+            # 입력 순서로 각 티커 시트
+            by_symbol = {r.spec.symbol: r for r in results}
+            for sym in input_order:
+                res = by_symbol.get(sym)
+                if res is None:
+                    continue
+                scalars = res.enriched_df.attrs.get("scalars", {})
+                write_sheet_for_ticker(
+                    wb, formats, res.spec.symbol, res.enriched_df, scalars
+                )
+                logger.info("%s | 시트 작성 완료", res.spec.symbol)
     finally:
         wb.close()
 
