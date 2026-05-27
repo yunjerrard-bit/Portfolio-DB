@@ -12,7 +12,7 @@
 - **Tech stack**: Python (yfinance + openpyxl 등 표준 라이브러리). Windows 로컬 실행.
 - **Output**: 단일 `.xlsx` 파일. 매 실행마다 새 파일 생성.
 - **데이터 소스 우선순위**: 시세 = Yahoo Finance / 재무 = EDGAR(미) → DART(한) → yfinance/네이버 보완
-- **Performance**: Yahoo Finance rate-limit 회피를 위한 합리적 throttle/retry 필요. 100종목 처리가 비현실적으로 오래 걸리면 안 됨.
+- **Performance**: Yahoo Finance rate-limit 회피를 위한 합리적 throttle/retry 필요. 200종목 처리가 비현실적으로 오래 걸리면 안 됨.
 - **언어**: 사용자 인터페이스(엑셀 헤더, 로그 메시지)는 한국어 우선.
 <!-- GSD:project-end -->
 

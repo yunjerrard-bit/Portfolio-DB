@@ -27,6 +27,7 @@ from stocksig.compute.color_rules import (
     decide_stoch_bucket,
     decide_trend_bucket,
 )
+from stocksig.compute.weekly import week_close_mask
 
 _EMA_VALUE_RE = re.compile(r"^EMA_Close_\d+$")
 
@@ -294,6 +295,11 @@ def write_sheet_for_ticker(
         header_fmt = _header_fmt_for(col_name, formats)
         ws.write(4, col_idx, korean_header(col_name), header_fmt)
 
+    # 주봉 신호는 '완성된 주(주 마지막 거래일=금요일)' 행에만 색을 입힌다.
+    # 월~목은 기본 서식. (휴장 시 그 주 실제 마지막 거래일이 기준)
+    _wk_mask = week_close_mask(enriched_df.index)
+    week_close_set = set(enriched_df.index[_wk_mask.to_numpy()])
+
     # 6행+: 날짜 내림차순 데이터
     sorted_df = enriched_df.sort_index(ascending=False)
     for row_offset, (idx, row) in enumerate(sorted_df.iterrows()):
@@ -335,34 +341,75 @@ def write_sheet_for_ticker(
 
             fmt_type = column_num_format(col_name)
 
+            # 주봉 신호 색은 완성된 주(금요일) 행에만 적용 (월~목 기본 서식).
+            is_wk_close = idx in week_close_set
+
             # 색 결정 → bucket
-            if col_name in ("Stoch_%K", "Stoch_%D", "Stoch_%K_week", "Stoch_%D_week"):
+            if col_name in ("Stoch_%K", "Stoch_%D"):
                 bucket = decide_stoch_bucket(value)
-            elif col_name in ("RSI", "RSI_week"):
+            elif col_name in ("Stoch_%K_week", "Stoch_%D_week"):
+                # 주봉 Stoch: 금요일 행만 색칠
+                bucket = decide_stoch_bucket(value) if is_wk_close else TechBucket.DEFAULT
+            elif col_name == "RSI":
                 bucket = decide_rsi_bucket(value)
+            elif col_name == "RSI_week":
+                # 주봉 RSI: 금요일 행만 색칠
+                bucket = decide_rsi_bucket(value) if is_wk_close else TechBucket.DEFAULT
             elif col_name.endswith("_trend"):
                 bucket = decide_trend_bucket(value)
-            elif col_name in ("Close_pct_change", "Close_pct_change_week"):
+            elif col_name == "Close_pct_change":
                 # gap-fix 01-14: σ 신호로 변경
-                med = row.get(f"{col_name}_median")
-                std = row.get(f"{col_name}_std")
+                med = row.get("Close_pct_change_median")
+                std = row.get("Close_pct_change_std")
                 bucket = decide_sigma_bucket(value, med, std)
+            elif col_name == "Close_pct_change_week":
+                # 주봉 종가 등락률: 금요일 행만 σ 신호 색 (통계는 금요일값 기준)
+                if is_wk_close:
+                    med = row.get("Close_pct_change_week_median")
+                    std = row.get("Close_pct_change_week_std")
+                    bucket = decide_sigma_bucket(value, med, std)
+                else:
+                    bucket = SigmaBucket.DEFAULT
             elif col_name == "Volume":
                 vpc = row.get("Volume_pct_change")
                 bucket = decide_trend_bucket(vpc) if not pd.isna(vpc) else TechBucket.DEFAULT
             elif col_name == "Volume_week":
-                vpc = row.get("Volume_pct_change_week")
-                bucket = decide_trend_bucket(vpc) if not pd.isna(vpc) else TechBucket.DEFAULT
-            elif col_name in ("Volume_pct_change", "Volume_pct_change_week"):
-                med = row.get(f"{col_name}_median")
-                std = row.get(f"{col_name}_std")
+                # 주봉 거래량: 금요일 행만 색칠
+                if is_wk_close:
+                    vpc = row.get("Volume_pct_change_week")
+                    bucket = (
+                        decide_trend_bucket(vpc)
+                        if not pd.isna(vpc)
+                        else TechBucket.DEFAULT
+                    )
+                else:
+                    bucket = TechBucket.DEFAULT
+            elif col_name == "Volume_pct_change":
+                med = row.get("Volume_pct_change_median")
+                std = row.get("Volume_pct_change_std")
                 bucket = decide_sigma_bucket(value, med, std)
+            elif col_name == "Volume_pct_change_week":
+                # 주봉 거래량 등락률: 금요일 행만 σ 신호 색 (통계는 금요일값 기준)
+                if is_wk_close:
+                    med = row.get("Volume_pct_change_week_median")
+                    std = row.get("Volume_pct_change_week_std")
+                    bucket = decide_sigma_bucket(value, med, std)
+                else:
+                    bucket = SigmaBucket.DEFAULT
             elif col_name == "MACD_OSC":
                 d = row.get("MACD_OSC_diff")
                 bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
             elif col_name == "MACD_OSC_week":
-                d = row.get("MACD_OSC_week_diff")
-                bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
+                # 주봉 MACD-OSC: 금요일 행만 색칠
+                if is_wk_close:
+                    d = row.get("MACD_OSC_week_diff")
+                    bucket = (
+                        decide_trend_bucket(d)
+                        if not pd.isna(d)
+                        else TechBucket.DEFAULT
+                    )
+                else:
+                    bucket = TechBucket.DEFAULT
             elif col_name.endswith(("_median", "_std")):
                 bucket = SigmaBucket.DEFAULT
             else:

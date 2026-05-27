@@ -45,6 +45,8 @@ PORTFOLIO_COLUMNS: list[str] = [
     "거래량",
     "(일)Stoch %K",
     "(일)RSI",
+    "(주)Stoch %K",
+    "(주)RSI",
     "(일)임펄스",
     "(주)임펄스",
 ]
@@ -163,15 +165,27 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
         bucket_t = decide_rsi_bucket(rsi)
         ws.write_number(row, 12, float(rsi), formats[(bucket_t, "percent_literal")])
 
-    # col 13: (일)임펄스
+    # col 13: (주)Stoch %K
+    stoch_w = last.get("Stoch_%K_week")
+    if not _nan(stoch_w):
+        bucket_t = decide_stoch_bucket(stoch_w)
+        ws.write_number(row, 13, float(stoch_w), formats[(bucket_t, "percent_literal")])
+
+    # col 14: (주)RSI
+    rsi_w = last.get("RSI_week")
+    if not _nan(rsi_w):
+        bucket_t = decide_rsi_bucket(rsi_w)
+        ws.write_number(row, 14, float(rsi_w), formats[(bucket_t, "percent_literal")])
+
+    # col 15: (일)임펄스
     imp_d = last.get("Impulse_daily")
     if not _nan(imp_d) and imp_d:
-        ws.write_string(row, 13, str(imp_d), _impulse_fmt(imp_d, formats))
+        ws.write_string(row, 15, str(imp_d), _impulse_fmt(imp_d, formats))
 
-    # col 14: (주)임펄스
+    # col 16: (주)임펄스
     imp_w = last.get("Impulse_weekly")
     if not _nan(imp_w) and imp_w:
-        ws.write_string(row, 14, str(imp_w), _impulse_fmt(imp_w, formats))
+        ws.write_string(row, 16, str(imp_w), _impulse_fmt(imp_w, formats))
 
 
 def _write_failure_row(ws, row: int, fail: TickerFailure, formats: dict) -> None:
@@ -179,8 +193,8 @@ def _write_failure_row(ws, row: int, fail: TickerFailure, formats: dict) -> None
     marker = formats["failed_row_marker"]
     ws.write_string(row, 0, fail.spec.symbol, marker)
     ws.write_string(row, 1, "?", marker)
-    # cols 2..13 비워둠.
-    ws.write_string(row, 14, f"실패: {fail.reason}", marker)
+    # cols 2..15 비워둠.
+    ws.write_string(row, 16, f"실패: {fail.reason}", marker)
 
 
 # ---------------- main entry -----------------------------------------------

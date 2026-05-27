@@ -92,8 +92,8 @@ def _open(path):
 # ---------------- tests ----------------------------------------------------
 
 
-def test_column_count_is_15():
-    assert len(PORTFOLIO_COLUMNS) == 15
+def test_column_count_is_17():
+    assert len(PORTFOLIO_COLUMNS) == 17
 
 
 def test_column_order(tmp_path):
@@ -241,7 +241,7 @@ def test_stoch_rsi_color(tmp_path):
 
 
 def test_impulse_cells(tmp_path):
-    """N6=녹색 (GREEN_800), O6=청색 (BLUE_800)."""
+    """P6=녹색 (GREEN_800), Q6=청색 (BLUE_800)."""
     path = tmp_path / "out.xlsx"
     wb, formats = make_workbook(path)
     res = _result(_spec(), impulse_daily="녹색", impulse_weekly="청색")
@@ -249,8 +249,8 @@ def test_impulse_cells(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    n6 = ws.cell(row=6, column=14)
-    o6 = ws.cell(row=6, column=15)
+    n6 = ws.cell(row=6, column=16)
+    o6 = ws.cell(row=6, column=17)
     assert n6.value == "녹색"
     assert o6.value == "청색"
     n_color = n6.font.color.value if n6.font.color else ""
@@ -285,12 +285,12 @@ def test_failed_row_in_sheet1(tmp_path):
     assert ws.cell(row=6, column=2).value == "?"
     # Middle cells empty:
     assert ws.cell(row=6, column=5).value in (None, "")
-    # Last column (15) = 실패: <reason>
-    last = ws.cell(row=6, column=15).value
+    # Last column (17) = 실패: <reason>
+    last = ws.cell(row=6, column=17).value
     assert last is not None and last.startswith("실패: ")
     assert "부분 데이터" in last
     # Italic + bg fill present (failed_row_marker)
-    assert ws.cell(row=6, column=15).font.italic is True
+    assert ws.cell(row=6, column=17).font.italic is True
 
 
 def test_input_order_preserved_with_mixed_success_fail(tmp_path):

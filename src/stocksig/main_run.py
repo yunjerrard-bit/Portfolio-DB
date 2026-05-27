@@ -24,15 +24,22 @@ from stocksig.compute.ema import add_ema_columns
 from stocksig.compute.impulse import add_impulse_columns
 from stocksig.compute.indicators import (
     compute_macd_oscillator,
+    macd_oscillator_week_to_date,
+    rsi_week_to_date,
     rsi_wilder,
     stoch_slow,
+    stoch_slow_week_to_date,
 )
 from stocksig.compute.stats import (
     add_expanding_stats,
     add_pct_change_columns,
     add_rolling_stats,
 )
-from stocksig.compute.weekly import compute_weekly
+from stocksig.compute.weekly import (
+    compute_weekly,
+    week_close_mask,
+    week_to_date_close_return,
+)
 from stocksig.config import load_env
 from stocksig.io.input import read_tickers_extended
 from stocksig.io.market import fetch_ohlcv_cached
@@ -70,14 +77,19 @@ def _build_data_cols() -> list[str]:
 
 DATA_COLS: list[str] = _build_data_cols()
 
+# 주봉 등락률(Close/Volume)은 '금요일값만'으로 통계를 내야 하므로 expanding 대상에서
+# 제외하고, _compute_enriched에서 별도로 금요일 기준 통계를 계산한다.
+_WEEKLY_FRIDAY_STAT_COLS: list[str] = [
+    "Close_pct_change_week",
+    "Volume_pct_change_week",
+]
+
 _EXPANDING_COLS: list[str] = [
     "Close_week",
     "High_week",
     "Low_week",
     "Close_pct_change",
-    "Close_pct_change_week",
     "Volume_pct_change",
-    "Volume_pct_change_week",
 ] + [f"EMA_Close_{n}" for n in _EMA_PERIODS] + [
     f"DIFF_{price}_{n}" for price in _PRICES for n in _EMA_PERIODS
 ]
@@ -105,37 +117,45 @@ def _compute_enriched(
     weekly = compute_weekly(raw)
     df = pd.concat([df, weekly], axis=1)
 
-    df["Close_pct_change_week"] = df["Close_week"].pct_change()
+    # 주봉 종가 등락률 (W열) — week-to-date 누적 수익률 (월=월, …, 금=주간 전체).
+    df["Close_pct_change_week"] = week_to_date_close_return(df["Close"])
+    # 주봉 거래량 등락률 (AE열) — 현행 유지: 주간 총거래량 pct_change (월~목 0, 금=주간 변화).
     df["Volume_pct_change_week"] = df["Volume_week"].pct_change()
 
     df = add_ema_columns(df)
 
     df["MACD_OSC"] = compute_macd_oscillator(df["Close"])
-    df["MACD_OSC_week"] = compute_macd_oscillator(df["Close_week"])
+    # 주봉 MACD-OSC (CO열) — week-to-date: 금요일=진짜 주봉 MACD, 주중=오늘 종가 반영.
+    df["MACD_OSC_week"] = macd_oscillator_week_to_date(df["Close"])
     df["MACD_OSC_diff"] = df["MACD_OSC"].diff()
     df["MACD_OSC_week_diff"] = df["MACD_OSC_week"].diff()
 
     stoch = stoch_slow(df)
     df["Stoch_%K"] = stoch["Stoch_%K"]
     df["Stoch_%D"] = stoch["Stoch_%D"]
-    weekly_input = pd.DataFrame(
-        {
-            "Close": df["Close_week"],
-            "High": df["High_week"],
-            "Low": df["Low_week"],
-        },
-        index=df.index,
-    )
-    stoch_w = stoch_slow(weekly_input)
+    # 주봉 Stoch %K/%D (CJ/CK열) — week-to-date: 금요일=진짜 주봉, 주중=이번 주 누적 고저/오늘 종가.
+    stoch_w = stoch_slow_week_to_date(df["High"], df["Low"], df["Close"])
     df["Stoch_%K_week"] = stoch_w["Stoch_%K"]
     df["Stoch_%D_week"] = stoch_w["Stoch_%D"]
     df["RSI"] = rsi_wilder(df)
-    df["RSI_week"] = rsi_wilder(
-        pd.DataFrame({"Close": df["Close_week"]}, index=df.index)
-    )
+    # 주봉 RSI (CM열) — 진행 중인 주의 종가를 '오늘 일봉 종가'로 갱신 (week-to-date).
+    df["RSI_week"] = rsi_week_to_date(df["Close"])
 
     df = add_rolling_stats(df, _DAILY_OHLC, window=200)
     df = add_expanding_stats(df, _EXPANDING_COLS)
+
+    # 주봉 등락률 통계는 '완성된 주(금요일)' 값만으로 계산 — 월~목 값(0 또는 진행형)이
+    # 중앙값/표준편차를 오염시키지 않도록 한다. 일봉 인덱스로 ffill broadcast.
+    week_mask = week_close_mask(df.index)
+    for col in _WEEKLY_FRIDAY_STAT_COLS:
+        fri = df.loc[week_mask, col]
+        df[f"{col}_median"] = (
+            fri.expanding().median().reindex(df.index, method="ffill")
+        )
+        df[f"{col}_std"] = (
+            fri.expanding().std().reindex(df.index, method="ffill")
+        )
+
     df = add_impulse_columns(df)
 
     scalars: dict[str, dict[str, float]] = {}
@@ -149,6 +169,14 @@ def _compute_enriched(
                 "median": float(med) if med is not None else None,
                 "std": float(std) if std is not None else None,
             }
+        elif col in _WEEKLY_FRIDAY_STAT_COLS:
+            # 행 3·4 스칼라도 금요일값만 기준 (위 통계와 동일 정책).
+            fri = df.loc[week_mask, col].dropna()
+            if fri.size:
+                scalars[col] = {
+                    "median": float(fri.median()),
+                    "std": float(fri.std()),
+                }
         elif col in df.columns:
             s = df[col].dropna()
             if s.size:
