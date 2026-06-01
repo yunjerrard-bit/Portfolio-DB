@@ -413,16 +413,10 @@ def write_sheet_for_ticker(
                 d = row.get("MACD_OSC_diff")
                 bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
             elif col_name == "MACD_OSC_week":
-                # 주봉 MACD-OSC: 금요일 행만 색칠
-                if is_wk_close:
-                    d = row.get("MACD_OSC_week_diff")
-                    bucket = (
-                        decide_trend_bucket(d)
-                        if not pd.isna(d)
-                        else TechBucket.DEFAULT
-                    )
-                else:
-                    bucket = TechBucket.DEFAULT
+                # 주봉 MACD-OSC: 일봉 MACD와 동일하게 매 행, 직전일 대비 증감 부호로 색칠
+                # (증가 → 초록, 감소 → 빨강). 단순 시각화이므로 Friday-only 게이트 미적용.
+                d = row.get("MACD_OSC_week_diff")
+                bucket = decide_trend_bucket(d) if not pd.isna(d) else TechBucket.DEFAULT
             elif col_name.endswith(("_median", "_std")):
                 bucket = SigmaBucket.DEFAULT
             else:
