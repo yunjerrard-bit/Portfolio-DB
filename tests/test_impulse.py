@@ -16,6 +16,8 @@ def test_add_impulse_columns_basic():
             "Close_week": [100.0, 101.0, 102.0, 103.0, 104.0],
             # trend 양수
             "EMA_Close_11_trend": [np.nan, 0.01, 0.01, -0.01, -0.01],
+            # 주봉 EMA11 진행형 trend (현재 임펄스가 이 컬럼을 직접 읽음)
+            "EMA_Close_11_week_trend": [np.nan, 0.0, 0.0, 0.0, 0.0],
             # MACD_OSC: 차분이 +,+,-,-,+ 패턴
             "MACD_OSC": [0.0, 1.0, 2.0, 1.5, 1.0],
             "MACD_OSC_week": [0.0, 1.0, 2.0, 1.5, 1.0],
@@ -46,6 +48,7 @@ def test_add_impulse_columns_blue_mixed():
             "Close": [100.0, 101.0, 102.0],
             "Close_week": [100.0, 101.0, 102.0],
             "EMA_Close_11_trend": [0.01, 0.01, 0.01],
+            "EMA_Close_11_week_trend": [0.0, 0.0, 0.0],
             "MACD_OSC": [10.0, 5.0, 1.0],  # 단조 하락 → diff < 0
             "MACD_OSC_week": [10.0, 5.0, 1.0],
         }
@@ -57,20 +60,22 @@ def test_add_impulse_columns_blue_mixed():
 
 
 def test_add_impulse_columns_weekly_computed():
-    """주봉 임펄스: Close_week ewm + MACD_OSC_week.diff() 부호."""
+    """주봉 임펄스: EMA_Close_11_week_trend(진행형) + MACD_OSC_week.diff() 부호."""
     n = 30
     dates = pd.date_range(start="2026-01-05", periods=n, freq="B")
     cw = pd.Series([100.0 + i for i in range(n)], index=dates)
+    # 진행형 주봉 EMA11 trend는 main_run 에서 사전 산출됨 — 여기서는 양수로 직접 주입
     df = pd.DataFrame(
         {
             "Close": cw,
             "Close_week": cw,
             "EMA_Close_11_trend": [0.0] * n,
+            "EMA_Close_11_week_trend": [0.001] * n,  # 양수 추세
             "MACD_OSC": [0.0] * n,
             "MACD_OSC_week": [i * 0.1 for i in range(n)],
         },
         index=dates,
     )
     out = add_impulse_columns(df)
-    # 마지막 행: ema11_week_trend > 0 (단조 상승), osc_week_diff > 0 → GREEN
+    # 마지막 행: ema11_week_trend > 0, osc_week_diff > 0 → GREEN
     assert out["Impulse_weekly"].iloc[-1] == "녹색"

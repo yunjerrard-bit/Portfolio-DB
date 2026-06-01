@@ -169,6 +169,33 @@ def rsi_wilder(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return rsi.rename("RSI")
 
 
+def ema_week_to_date(daily_close: pd.Series, span: int) -> pd.Series:
+    """주간 진행형(week-to-date) EMA.
+
+    완성된 주는 그 주 금요일 종가에 대한 표준 주봉 EMA, 진행 중인 주는 '직전
+    완성 주의 EMA 상태' 에 '오늘 일봉 종가' 로 한 스텝만 추가 진행한 값.
+    금요일 행에서는 `weekly_close.ewm(span=span, adjust=False).mean()`과 정확히
+    일치한다.
+
+    오늘 종가의 직접 가중치 = α = 2/(span+1).
+    (span=11 → 16.67%, span=22 → 8.70%)
+    주중 다른 일자의 종가는 들어가지 않는다 — 매 일자는 '직전 완성 주 + 그날 종가'
+    한 스텝만 본다 (진짜 주봉 EMA가 한 주에 한 점만 보는 것과 동치).
+
+    Args:
+        daily_close: 일봉 종가 Series (DatetimeIndex).
+        span: EMA span (예: 11, 22).
+
+    Returns:
+        daily_close와 동일 인덱스의 진행형 주봉 EMA Series.
+    """
+    wc = daily_close.resample("W-FRI").last()
+    ema_w = wc.ewm(span=span, adjust=False).mean()
+    alpha = 2 / (span + 1)
+    prev = ema_w.shift(1).reindex(daily_close.index, method="bfill")
+    return prev * (1 - alpha) + daily_close * alpha
+
+
 def rsi_week_to_date(daily_close: pd.Series, period: int = 14) -> pd.Series:
     """주간 진행형(week-to-date) Wilder RSI.
 

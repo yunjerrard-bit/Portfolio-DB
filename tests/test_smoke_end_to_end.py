@@ -82,8 +82,8 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
     # SHEET-02: A1 == ticker
     assert ws["A1"].value == "AAPL"
 
-    # gap-fix 01-14: 컬럼 폭 95
-    assert ws.max_column == 95, f"시트 폭은 95여야 한다 (현재: {ws.max_column})"
+    # 97 컬럼 (gap-fix 01-14 95 + 주봉 EMA 진행형 추세 2개)
+    assert ws.max_column == 97, f"시트 폭은 97이어야 한다 (현재: {ws.max_column})"
 
     # gap-fix 01-07: 신규 한국어 헤더 검증
     layout = build_column_layout()
@@ -408,8 +408,8 @@ def test_diff_columns_ordered_by_period():
             f"{base} +2 컬럼이 {base}_std 이어야 함, 실제: {layout[i + 2]}"
         )
 
-    # gap-fix 01-14: 총 컬럼 수 95
-    assert len(layout) == 95, f"총 컬럼 수 95 이어야 함, 실제: {len(layout)}"
+    # 97 컬럼 (gap-fix 01-14 95 + 주봉 EMA 진행형 추세 2개)
+    assert len(layout) == 97, f"총 컬럼 수 97 이어야 함, 실제: {len(layout)}"
 
 
 def test_ema_value_columns_hidden(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):

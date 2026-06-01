@@ -24,6 +24,7 @@ from stocksig.compute.ema import add_ema_columns
 from stocksig.compute.impulse import add_impulse_columns
 from stocksig.compute.indicators import (
     compute_macd_oscillator,
+    ema_week_to_date,
     macd_oscillator_week_to_date,
     rsi_week_to_date,
     rsi_wilder,
@@ -140,6 +141,12 @@ def _compute_enriched(
     df["RSI"] = rsi_wilder(df)
     # 주봉 RSI (CM열) — 진행 중인 주의 종가를 '오늘 일봉 종가'로 갱신 (week-to-date).
     df["RSI_week"] = rsi_week_to_date(df["Close"])
+
+    # 주봉 EMA 진행형 추세 (AK·AL열) — 일봉 AK/AO 추세 컬럼의 주봉 대응.
+    # 금요일=진짜 주봉 EMA의 pct_change, 주중=오늘 종가가 α=2/(N+1)만큼 반영.
+    # 주봉 임펄스의 EMA 입력으로도 사용된다 (impulse.py 가 이 컬럼을 읽음).
+    df["EMA_Close_11_week_trend"] = ema_week_to_date(df["Close"], span=11).pct_change()
+    df["EMA_Close_22_week_trend"] = ema_week_to_date(df["Close"], span=22).pct_change()
 
     df = add_rolling_stats(df, _DAILY_OHLC, window=200)
     df = add_expanding_stats(df, _EXPANDING_COLS)
