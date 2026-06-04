@@ -1,0 +1,93 @@
+<!--
+005930(삼성전자) finance.naver.com/item/main.naver PER/EPS 표 발췌 (실페이지 기반).
+03-02 스파이크 확정 [VERIFIED 2026-06-04]:
+  - 인코딩: **UTF-8** (RESEARCH A5의 euc-kr 가정은 폐기 — 현재 페이지는 charset=utf-8,
+    euc-kr/cp949 로 디코드 시 UnicodeDecodeError. naver_scraper 는 r.content.decode("utf-8")).
+  - 셀렉터: #_per=28.94, #_eps=12,372(쉼표 포함→strip), #_pbr=4.98 (select_one 텍스트).
+  - Naver 는 GPM/OPM 미노출 → KR 폴백은 PER 만 현실적.
+  - bs4(lxml) 파싱: BeautifulSoup(html, "lxml").select_one("#_per").get_text(strip=True).
+-->
+<table class="per_table" summary="PER/EPS 정보">
+<caption>PER/EPS</caption>
+<tbody>
+<tr>
+<th scope="row">
+	 								PER<span class="bar">l</span>EPS<span class="date">(2026.03)</span><a href="javascript:togglePannel('helpPannel1');" onmouseout="hidePannel('helpPannel1');" onmouseover="showPannel('helpPannel1');"><img alt="추정PER EPS 상세설명" height="11" src="https://ssl.pstatic.net/static/nfinance/2018/10/26/btn_help.png" width="11"/></a>
+<div class="lyr_section">
+<div class="tooltip_lyr" id="helpPannel1" style="display:none">
+<p>
+<strong>PER = 현재가 ÷ EPS</strong>
+												EPS는 지배기업귀속 최근 4분기 합산 순이익을
+												수정평균발행주식수로 나눈 값이며, 보통주와
+												우선주를 합산해서 계산합니다.
+											</p>
+<span class="arrow"></span>
+</div>
+</div>
+</th>
+<td>
+<em id="_per">28.94</em>배
+									
+									<span class="bar">l</span>
+<em id="_eps">12,372</em>원
+									
+	 							</td>
+</tr>
+</tbody>
+<tr>
+<th scope="row">추정PER<span class="bar">l</span>EPS<a href="javascript:togglePannel('helpPannel3');" onmouseout="hidePannel('helpPannel3');" onmouseover="showPannel('helpPannel3');"><img alt="추정PER EPS 상세설명" height="11" src="https://ssl.pstatic.net/static/nfinance/2018/10/26/btn_help.png" width="11"/></a>
+<div class="lyr_section">
+<div class="tooltip_lyr tooltip_lyr2" id="helpPannel3" style="display:none">
+<p>
+<strong>추정PER = 현재가÷추정EPS</strong>
+												추정EPS는 올해 예상EPS에 대한 증권사 추정 평균값(컨센서스)으로 에프앤가이드에서 제공합니다. 추정 증권사가 3개 이상인 경우에만 제공합니다.
+											</p>
+<span class="arrow"></span>
+</div>
+</div>
+</th>
+<td>
+<em id="_cns_per">8.00</em>배
+									
+									<span class="bar">l</span>
+<em id="_cns_eps">43,099</em>원
+									
+								</td>
+</tr>
+<tr>
+<th scope="row">PBR<span class="bar">l</span>BPS <span class="date">(2026.03)</span><a href="javascript:togglePannel('helpPannel4');" onmouseout="hidePannel('helpPannel4');" onmouseover="showPannel('helpPannel4');"><img alt="PBR | BPS 상세설명" height="11" src="https://ssl.pstatic.net/static/nfinance/2018/10/26/btn_help.png" width="11"/></a>
+<div class="lyr_section">
+<div class="tooltip_lyr tooltip_lyr3" id="helpPannel4" style="display:none">
+<p>
+<strong>PBR= 현재가 ÷ BPS</strong>
+												BPS는 최근 분기 자본총계를 수정기말유통주식수로
+												나눈 값이며, 보통주와 우선주를 합산해서 계산합니다.
+											</p>
+<span class="arrow"></span>
+</div>
+</div>
+</th>
+<td>
+<em id="_pbr">4.98</em>배
+									
+									<span class="bar">l</span>
+<em>71,907</em>원
+									
+								</td>
+</tr>
+<tr>
+<th scope="row">배당수익률<span class="bar">l</span><span>2025.12</span><a href="javascript:togglePannel('helpPannel5');" onmouseout="hidePannel('helpPannel5');" onmouseover="showPannel('helpPannel5');"><img alt="배당수익률 상세설명" height="11" src="https://ssl.pstatic.net/static/nfinance/2018/10/26/btn_help.png" width="11"/></a>
+<div class="lyr_section">
+<div class="tooltip_lyr dividend_layer" id="helpPannel5" style="display:none">
+<strong>배당수익률 = (배당금 / 현재가) x 100</strong>
+<p>배당금은 최근 결산연도 기준의 중간배당을 포함한 총 배당금입니다.</p>
+<span class="arrow"></span>
+</div>
+</div>
+</th>
+<td>
+<em id="_dvr">0.47</em>%
+									
+								</td>
+</tr>
+</table>
