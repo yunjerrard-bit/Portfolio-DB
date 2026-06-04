@@ -4,6 +4,9 @@
 포맷 `"{TICKER}|{YYYY-MM-DD}"` 이며 값은 임의의 pickle 가능 객체(주로
 pandas DataFrame). 만료는 24시간으로 고정. Phase 2 Wave 2의 `io.market`
 모듈이 Yahoo Finance 호출 전후로 사용.
+
+Phase 3에서 7일 TTL 펀더멘털 캐시(`.cache/fundamentals`, 키
+`"{SOURCE}|{TICKER}|{QUARTER}"`)를 동일 패턴으로 추가(OHLCV와 분리).
 """
 from __future__ import annotations
 
@@ -55,3 +58,44 @@ def put_ohlcv(ticker: str, df) -> None:
     """캐시 저장. 만료 24시간."""
     key = make_key(ticker)
     _get_cache().set(key, df, expire=_TTL_SECONDS)
+
+
+# --- 펀더멘털 캐시 (7일 TTL, OHLCV와 분리) -------------------------------
+
+_FUND_DIR = Path(".cache/fundamentals")
+_FUND_TTL_SECONDS = 7 * 24 * 60 * 60
+
+_fund_cache: Optional[Cache] = None
+
+
+def _get_fund_cache() -> Cache:
+    global _fund_cache
+    if _fund_cache is None:
+        _FUND_DIR.mkdir(parents=True, exist_ok=True)
+        _fund_cache = Cache(str(_FUND_DIR))
+    return _fund_cache
+
+
+def make_fund_key(source: str, ticker: str, quarter_label: str) -> str:
+    """펀더멘털 캐시 키: `"{SOURCE}|{TICKER}|{QUARTER}"` (예: ``"EDGAR|AAPL|2026Q3"``)."""
+    return f"{source}|{ticker}|{quarter_label}"
+
+
+def get_fund(source: str, ticker: str, quarter_label: str):
+    """펀더멘털 캐시 조회. 히트시 객체 반환, 미스시 None.
+
+    HIT/MISS 로그는 한국어 + 영문 substring(`cache HIT`/`cache MISS`)을 동시 포함.
+    """
+    key = make_fund_key(source, ticker, quarter_label)
+    value = _get_fund_cache().get(key)
+    if value is not None:
+        logger.info("%s | 펀더멘털 캐시 HIT (cache HIT, key=%s)", ticker, key)
+    else:
+        logger.info("%s | 펀더멘털 캐시 MISS (cache MISS, key=%s)", ticker, key)
+    return value
+
+
+def put_fund(source: str, ticker: str, quarter_label: str, value) -> None:
+    """펀더멘털 캐시 저장. 만료 7일."""
+    key = make_fund_key(source, ticker, quarter_label)
+    _get_fund_cache().set(key, value, expire=_FUND_TTL_SECONDS)
