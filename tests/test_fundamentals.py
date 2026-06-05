@@ -207,3 +207,151 @@ def test_fetch_fundamentals_absorbs_exception():
     assert res.peg.value is None
     assert res.gpm.value is None
     assert res.opm.value is None
+
+
+# --- fetch_fundamentals KR 라우팅 (metric별 차등 폴백, mock 주입) ----------
+
+def _dart_full():
+    """DART 전지표 채움 raw dict (005930 스파이크값 스케일).
+
+    eps=기본주당이익(KRW/주), eps_prior=전년 기본주당이익(PEG 입력).
+    """
+    return {
+        "revenue": 300_870_000_000_000.0,
+        "gross_profit": 110_000_000_000_000.0,
+        "op_income": 43_601_000_000_000.0,
+        "net_income": 45_206_000_000_000.0,
+        "eps": 6_605.0,
+        "eps_prior": 4_950.0,
+        "note": None,
+    }
+
+
+def test_fetch_fundamentals_kr_all_dart():
+    # ① DART 전지표 채움 → source 전부 DART (Naver/yf 미호출)
+    naver_calls = {"n": 0}
+    yf_calls = {"n": 0}
+
+    def _naver(t):
+        naver_calls["n"] += 1
+        return None
+
+    def _yf(t):
+        yf_calls["n"] += 1
+        return {}
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=lambda t: _dart_full(),
+        naver_fn=_naver,
+        yf_fn=_yf,
+    )
+    assert isinstance(res, FundamentalsResult)
+    # PER = 80000 / 6605
+    assert res.per.value is not None
+    assert res.per.source == "DART"
+    assert res.peg.source == "DART"
+    assert res.gpm.source == "DART"
+    assert res.opm.source == "DART"
+    # GPM = 110조 / 300.87조
+    assert abs(res.gpm.value - (110_000_000_000_000.0 / 300_870_000_000_000.0)) < 1e-9
+    # 전지표 DART 충족 → 폴백 미호출
+    assert naver_calls["n"] == 0
+    assert yf_calls["n"] == 0
+
+
+def test_fetch_fundamentals_kr_per_naver_fallback():
+    # ② DART PER 결손(eps None) → Naver 보완 (PER source=Naver)
+    dart_no_eps = dict(_dart_full(), eps=None, eps_prior=None)
+    naver_calls = {"n": 0}
+
+    def _naver(t):
+        naver_calls["n"] += 1
+        return 12.3  # Naver PER
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=lambda t: dart_no_eps,
+        naver_fn=_naver,
+        yf_fn=lambda t: {},
+    )
+    assert res.per.value == 12.3
+    assert res.per.source == "Naver"
+    assert naver_calls["n"] == 1
+    # GPM/OPM 은 DART 유지
+    assert res.gpm.source == "DART"
+    assert res.opm.source == "DART"
+
+
+def test_fetch_fundamentals_kr_per_yf_fallback():
+    # ③ DART PER 결손 + Naver None → yf (PER source=yf)
+    dart_no_eps = dict(_dart_full(), eps=None, eps_prior=None)
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=lambda t: dart_no_eps,
+        naver_fn=lambda t: None,  # Naver 결손/상한초과
+        yf_fn=lambda t: {"PER": 15.5},
+    )
+    assert res.per.value == 15.5
+    assert res.per.source == "yf"
+
+
+def test_fetch_fundamentals_kr_gpm_skips_naver():
+    # ④ DART GPM 결손 → Naver 미호출(GPM 미노출)·yf 직행
+    dart_no_gpm = dict(_dart_full(), gross_profit=None)
+    naver_calls = {"n": 0}
+
+    def _naver(t):
+        naver_calls["n"] += 1
+        return 12.3
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=lambda t: dart_no_gpm,
+        naver_fn=_naver,
+        yf_fn=lambda t: {"GPM": 0.42},
+    )
+    assert res.gpm.value == 0.42
+    assert res.gpm.source == "yf"
+    # GPM 폴백은 Naver 를 절대 거치지 않음 (PER 은 DART 로 채워져 Naver 불필요)
+    assert naver_calls["n"] == 0
+    # PER 은 DART 유지
+    assert res.per.source == "DART"
+
+
+def test_fetch_fundamentals_kr_all_missing():
+    # ⑤ 전 소스 결손 → 빈값 + 한국어 사유, raise 없음
+    dart_empty = {
+        "revenue": None, "gross_profit": None, "op_income": None,
+        "net_income": None, "eps": None, "eps_prior": None,
+        "note": "DART 데이터 미존재",
+    }
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=lambda t: dart_empty,
+        naver_fn=lambda t: None,
+        yf_fn=lambda t: {},
+    )
+    assert isinstance(res, FundamentalsResult)
+    assert res.per.value is None
+    assert res.peg.value is None
+    assert res.gpm.value is None
+    assert res.opm.value is None
+    # 한국어 사유 존재
+    assert res.per.note is not None
+
+
+def test_fetch_fundamentals_kr_absorbs_exception():
+    # KR dart_fn 예외 → raise 없이 빈 결과
+    def _boom(t):
+        raise RuntimeError("dart 폭발")
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=_boom,
+        naver_fn=lambda t: None,
+        yf_fn=lambda t: {},
+    )
+    assert isinstance(res, FundamentalsResult)
+    assert res.per.value is None
