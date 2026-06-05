@@ -14,6 +14,7 @@ import openpyxl
 import pandas as pd
 import pytest
 
+from stocksig.io.fundamentals import FundamentalsResult, MetricCell
 from stocksig.io.input import TickerSpec
 from stocksig.output.sheet_portfolio import (
     PORTFOLIO_COLUMNS,
@@ -92,8 +93,10 @@ def _open(path):
 # ---------------- tests ----------------------------------------------------
 
 
-def test_column_count_is_17():
-    assert len(PORTFOLIO_COLUMNS) == 17
+def test_column_count_is_21():
+    # 03-05: 기존 17열 + PER/PEG/GPM/OPM 4열 = 21열 (D-01, index 17~20).
+    assert len(PORTFOLIO_COLUMNS) == 21
+    assert PORTFOLIO_COLUMNS[-4:] == ["PER", "PEG", "GPM", "OPM"]
 
 
 def test_column_order(tmp_path):
@@ -313,3 +316,120 @@ def test_input_order_preserved_with_mixed_success_fail(tmp_path):
     assert ws.cell(row=7, column=1).value == "MSFT"
     assert ws.cell(row=8, column=1).value == "BAD"
     assert ws.cell(row=8, column=2).value == "?"
+
+
+# ---------------- 03-05: 펀더멘털 4열 (PORT-05 / FUND-05 / D-05) ----------
+
+
+def _fund(per=None, peg=None, gpm=None, opm=None) -> FundamentalsResult:
+    """MetricCell 4종 헬퍼 — 각 인자는 (value, source, note) 튜플 또는 None."""
+    def cell(t):
+        if t is None:
+            return MetricCell(value=None, source=None, note=None)
+        v, s, n = t
+        return MetricCell(value=v, source=s, note=n)
+
+    return FundamentalsResult(
+        per=cell(per), peg=cell(peg), gpm=cell(gpm), opm=cell(opm)
+    )
+
+
+def test_fund_cols(tmp_path):
+    """PORT-05: col 18~21(PER/PEG/GPM/OPM) 값 + 출처 셀 주석, 포맷 무손상."""
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    fund = _fund(
+        per=(15.5, "EDGAR", "EDGAR · 2026Q2"),
+        peg=(1.25, "EDGAR", "EDGAR · 2026Q2"),
+        gpm=(0.45, "EDGAR", "EDGAR · 2026Q2"),
+        opm=(0.30, "EDGAR", "EDGAR · 2026Q2"),
+    )
+    res = TickerResult(
+        spec=_spec(), enriched_df=_make_enriched_df(), market="US", fundamentals=fund
+    )
+    write_portfolio_sheet(wb, formats, [res], [], ["AAPL"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    per_c = ws.cell(row=6, column=18)
+    peg_c = ws.cell(row=6, column=19)
+    gpm_c = ws.cell(row=6, column=20)
+    opm_c = ws.cell(row=6, column=21)
+
+    assert per_c.value == pytest.approx(15.5)
+    assert peg_c.value == pytest.approx(1.25)
+    assert gpm_c.value == pytest.approx(0.45)
+    assert opm_c.value == pytest.approx(0.30)
+
+    # FUND-05: 출처 셀 주석 (write_comment)
+    assert per_c.comment is not None
+    assert "EDGAR" in per_c.comment.text
+    assert gpm_c.comment is not None and "EDGAR" in gpm_c.comment.text
+
+    # num_format 무손상: PER/PEG = #,##0.00, GPM/OPM = 0.00%
+    assert per_c.number_format == "#,##0.00"
+    assert peg_c.number_format == "#,##0.00"
+    assert gpm_c.number_format == "0.00%"
+    assert opm_c.number_format == "0.00%"
+
+
+def test_fund_missing_cell_blank_with_note(tmp_path):
+    """D-05: 결손 셀은 빈 칸 + 한국어 사유 주석 (0/특수값 미사용)."""
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    fund = _fund(
+        per=(15.5, "EDGAR", "EDGAR · 2026Q2"),
+        peg=None,  # 결손
+        gpm=(0.45, "EDGAR", "EDGAR · 2026Q2"),
+        opm=None,  # 결손
+    )
+    # 결손 셀 note 부여 (fetch 단이 사유를 채운 형태 모사)
+    fund.peg.note = "조회 실패: EPS 성장률 ≤ 0"
+    res = TickerResult(
+        spec=_spec(), enriched_df=_make_enriched_df(), market="US", fundamentals=fund
+    )
+    write_portfolio_sheet(wb, formats, [res], [], ["AAPL"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    peg_c = ws.cell(row=6, column=19)
+    opm_c = ws.cell(row=6, column=21)
+    # 값 없음 (0 금지)
+    assert peg_c.value in (None, "")
+    assert opm_c.value in (None, "")
+    # 사유 주석 존재
+    assert peg_c.comment is not None
+    assert "EPS 성장률" in peg_c.comment.text
+
+
+def test_fund_none_backward_compat(tmp_path):
+    """하위호환: res.fundamentals=None 시 4셀 빈칸 + '펀더멘털 미수집' 주석, raise 없음."""
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    res = TickerResult(
+        spec=_spec(), enriched_df=_make_enriched_df(), market="US", fundamentals=None
+    )
+    write_portfolio_sheet(wb, formats, [res], [], ["AAPL"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    for col in (18, 19, 20, 21):
+        c = ws.cell(row=6, column=col)
+        assert c.value in (None, "")
+        assert c.comment is not None
+        assert "펀더멘털 미수집" in c.comment.text
+
+
+def test_fund_failure_row_no_fund_cells(tmp_path):
+    """D-06: 실패 행은 펀더멘털 셀을 쓰지 않는다 (col 18~21 빈칸)."""
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    failures = [TickerFailure(spec=_spec("XYZ"), reason="네트워크 오류")]
+    write_portfolio_sheet(wb, formats, [], failures, ["XYZ"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    for col in (18, 19, 20, 21):
+        c = ws.cell(row=6, column=col)
+        assert c.value in (None, "")
+        assert c.comment is None

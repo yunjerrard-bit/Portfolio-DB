@@ -30,7 +30,7 @@ from stocksig.runner import TickerFailure, TickerResult
 
 logger = logging.getLogger(__name__)
 
-# 15 컬럼 (D-08).
+# 21 컬럼 — 기존 17열(D-08) + 펀더멘털 4열(D-01, 03-05, index 17~20 / 시트 R/S/T/U).
 PORTFOLIO_COLUMNS: list[str] = [
     "티커",
     "시장",
@@ -49,7 +49,18 @@ PORTFOLIO_COLUMNS: list[str] = [
     "(주)RSI",
     "(일)임펄스",
     "(주)임펄스",
+    "PER",  # col 17 (시트 R)
+    "PEG",  # col 18 (시트 S)
+    "GPM",  # col 19 (시트 T)
+    "OPM",  # col 20 (시트 U)
 ]
+
+# 펀더멘털 4셀 컬럼 인덱스 + num_format 매핑 (신규 Format 0개 — 기존 캐시 재사용).
+# PER/PEG = "price"(#,##0.00), GPM/OPM = "percent_ratio"(0.00%).
+_FUND_COL_PER = 17
+_FUND_COL_PEG = 18
+_FUND_COL_GPM = 19
+_FUND_COL_OPM = 20
 
 _SHEET_NAME = "시트1"
 _EMA_PERIODS = (11, 22, 96, 192)
@@ -89,6 +100,28 @@ def _impulse_fmt(value, formats):
     if value == "청색":
         return formats["impulse_blue"]
     return formats["impulse_default"]
+
+
+def _write_fund_cell(ws, row: int, col: int, cell, num_fmt: str, formats: dict) -> None:
+    """펀더멘털 단일 셀 — 값 write_number + 출처 write_comment (D-02/D-05).
+
+    cell.value 존재 → write_number(기존 Format[(DEFAULT, num_fmt)] 재사용) +
+                       note(또는 source) write_comment.
+    cell.value 결손 → write_blank + 사유 note(또는 "조회 실패") write_comment.
+    0/-999999 등 특수값을 절대 쓰지 않는다 (D-05 — 평균/정렬 오염 방지).
+    write_comment 는 값/num_format 과 독립이라 포맷을 손상시키지 않는다.
+    """
+    fmt = formats[(SigmaBucket.DEFAULT, num_fmt)]
+    value = cell.value
+    if value is not None and not _nan(value):
+        ws.write_number(row, col, float(value), fmt)
+        comment = cell.note or cell.source
+        if comment:
+            ws.write_comment(row, col, str(comment))
+    else:
+        # D-05: 빈 셀 + 한국어 사유 주석 (값 미기재).
+        ws.write_blank(row, col, None, fmt)
+        ws.write_comment(row, col, str(cell.note or "조회 실패"))
 
 
 # ---------------- row writers ---------------------------------------------
@@ -186,6 +219,24 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
     imp_w = last.get("Impulse_weekly")
     if not _nan(imp_w) and imp_w:
         ws.write_string(row, 16, str(imp_w), _impulse_fmt(imp_w, formats))
+
+    # cols 17~20: 펀더멘털 PER/PEG/GPM/OPM (03-05, D-01/D-02/D-05).
+    fund = res.fundamentals
+    if fund is not None:
+        _write_fund_cell(ws, row, _FUND_COL_PER, fund.per, "price", formats)
+        _write_fund_cell(ws, row, _FUND_COL_PEG, fund.peg, "price", formats)
+        _write_fund_cell(ws, row, _FUND_COL_GPM, fund.gpm, "percent_ratio", formats)
+        _write_fund_cell(ws, row, _FUND_COL_OPM, fund.opm, "percent_ratio", formats)
+    else:
+        # 하위호환: 펀더멘털 미수집 → 4셀 빈칸 + 사유 주석 (raise 금지).
+        for col, num_fmt in (
+            (_FUND_COL_PER, "price"),
+            (_FUND_COL_PEG, "price"),
+            (_FUND_COL_GPM, "percent_ratio"),
+            (_FUND_COL_OPM, "percent_ratio"),
+        ):
+            ws.write_blank(row, col, None, formats[(SigmaBucket.DEFAULT, num_fmt)])
+            ws.write_comment(row, col, "펀더멘털 미수집")
 
 
 def _write_failure_row(ws, row: int, fail: TickerFailure, formats: dict) -> None:
