@@ -82,6 +82,18 @@ def fetch_ohlcv(ticker: str) -> pd.DataFrame:
             f"{ticker} | yfinance가 빈 OHLCV를 반환했습니다 (티커 확인 필요)."
         )
 
+    # 후행 미정산봉 트리밍: Yahoo가 최신 일봉의 Close를 NaN(Volume만)으로 내려주면
+    # iloc[-1]이 빈 행을 가리켜 시트1 최신값이 빈칸이 된다. 캐시 저장 이전 단계에서
+    # Close=NaN 행을 제거한다. High/Low/Open은 건드리지 않는다(EWM carry-forward 보존).
+    original_rows = len(df)
+    df = df.dropna(subset=["Close"])
+    removed = original_rows - len(df)
+    if removed > 0:
+        logger.info("%s | 미정산/NaN 최신봉 %d개 제외", ticker, removed)
+
+    if df.empty:
+        raise ValueError(f"{ticker} | Close 유효 행이 없습니다 (전 봉 NaN)")
+
     logger.info("%s | OHLCV %d 거래일 수신 완료", ticker, len(df))
     return df
 
