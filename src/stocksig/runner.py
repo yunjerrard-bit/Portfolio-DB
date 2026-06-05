@@ -33,11 +33,17 @@ _MIN_TRADING_DAYS = 20
 
 @dataclass
 class TickerResult:
-    """성공한 티커의 결과."""
+    """성공한 티커의 결과.
+
+    fundamentals: 03-05 추가 — PASS 1b에서 주입한 `FundamentalsResult | None`.
+    기본 None 으로 Phase 1/2 3-인자 호출 및 fundamentals_fn 미전달 시 무회귀.
+    펀더멘털 결손은 티커 실패가 아니다 (D-disc-10) — None 으로 남기고 시세 결과는 유지.
+    """
 
     spec: TickerSpec
     enriched_df: pd.DataFrame
     market: str  # "US" | "KR"
+    fundamentals: "object | None" = None
 
 
 @dataclass
@@ -64,25 +70,47 @@ def process_ticker(
     spec: TickerSpec,
     classify_market: Callable[[str], str],
     pipeline: Callable[[str], pd.DataFrame],
+    fundamentals_fn: Callable[[str, str, float | None], object] | None = None,
 ) -> TickerResult:
     """단일 티커 처리 (스레드 worker 진입점).
 
     pipeline 예외는 그대로 propagate시켜 `run_all`의 except에서 잡힌다.
     부분 데이터 검출 시 `ValueError(한국어 reason)`을 raise해 일관된
     failure path를 유지한다.
+
+    PASS 1b (03-05): 시세 검증 통과 후 `fundamentals_fn` 이 있으면
+    `last_close = df.iloc[-1].get("Close")` 를 주입해 호출한다. 펀더멘털 fetch
+    예외는 try/except 로 흡수하고 `fundamentals=None` 으로 남긴다 — 시세가 정상이면
+    펀더멘털 결손은 티커 실패가 아니다 (D-disc-10). fetch_fundamentals 자체도
+    내부에서 모든 경로 예외를 흡수하지만, 방어적으로 한 겹 더 격리한다.
     """
     market = classify_market(spec.symbol)
     df = pipeline(spec.symbol)
     reason = _validate_row_count(spec.symbol, df)
     if reason is not None:
         raise ValueError(reason)
-    return TickerResult(spec=spec, enriched_df=df, market=market)
+
+    fundamentals = None
+    if fundamentals_fn is not None:
+        try:
+            last_close = df.iloc[-1].get("Close")
+            fundamentals = fundamentals_fn(spec.symbol, market, last_close)
+        except Exception as e:  # noqa: BLE001 — D-disc-10: 펀더멘털 결손 ≠ 티커 실패
+            logger.warning(
+                "%s | 펀더멘털 fetch 예외 흡수: %s", spec.symbol, e
+            )
+            fundamentals = None
+
+    return TickerResult(
+        spec=spec, enriched_df=df, market=market, fundamentals=fundamentals
+    )
 
 
 def run_all(
     specs: list[TickerSpec],
     classify_market: Callable[[str], str],
     pipeline: Callable[[str], pd.DataFrame],
+    fundamentals_fn: Callable[[str, str, float | None], object] | None = None,
 ) -> tuple[list[TickerResult], list[TickerFailure]]:
     """N 티커 fan-out 실행 + per-ticker 예외 격리.
 
@@ -91,6 +119,9 @@ def run_all(
         classify_market: `symbol → "US"|"KR"` 분류 함수.
         pipeline: `symbol → enriched DataFrame` — fetch+compute 합본.
                   예외를 raise하면 해당 티커만 TickerFailure로 격리된다.
+        fundamentals_fn: `(ticker, market, last_close) → FundamentalsResult` (03-05).
+                  None 이면 모든 TickerResult.fundamentals=None (하위호환).
+                  fetch 예외는 process_ticker 가 흡수 — 티커 실패 아님 (D-disc-10).
 
     Returns:
         `(results, failures)` — 모든 티커가 둘 중 하나에 들어간다.
@@ -101,7 +132,9 @@ def run_all(
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         future_to_spec = {
-            executor.submit(process_ticker, spec, classify_market, pipeline): spec
+            executor.submit(
+                process_ticker, spec, classify_market, pipeline, fundamentals_fn
+            ): spec
             for spec in specs
         }
         completed = 0

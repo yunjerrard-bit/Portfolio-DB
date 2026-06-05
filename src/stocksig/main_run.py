@@ -42,6 +42,8 @@ from stocksig.compute.weekly import (
     week_to_date_close_return,
 )
 from stocksig.config import load_env
+from stocksig.io import naver_scraper
+from stocksig.io.fundamentals import fetch_fundamentals
 from stocksig.io.input import read_tickers_extended
 from stocksig.io.market import fetch_ohlcv_cached
 from stocksig.io.market_kind import classify_market
@@ -226,12 +228,17 @@ def run(
     """
     load_env(env_path)
 
+    # D-07: run 시작마다 네이버 폴백 카운터 초기화 (다회 실행/장수 프로세스 안전).
+    naver_scraper.reset_naver_count()
+
     specs = read_tickers_extended(tickers_path)
     logger.info("main | 티커 %d개 로드 완료", len(specs))
 
-    # PASS 1 — fan-out
+    # PASS 1 — fan-out (+ PASS 1b: 펀더멘털 fetch_fundamentals 클로저 주입)
     pipeline = _make_pipeline()
-    results, failures = run_all(specs, classify_market, pipeline)
+    results, failures = run_all(
+        specs, classify_market, pipeline, fundamentals_fn=fetch_fundamentals
+    )
 
     # PASS 2 — write
     out_dir = Path(output_dir)

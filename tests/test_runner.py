@@ -123,6 +123,70 @@ def test_failure_summary_log(caplog):
     assert "실패 티커: B" in text
 
 
+def test_fundamentals_fn_injected():
+    """fundamentals_fn stub 주입 시 TickerResult.fundamentals 가 채워진다."""
+    specs = [TickerSpec("AAPL")]
+
+    sentinel = object()
+
+    def pipeline(sym: str) -> pd.DataFrame:
+        return _make_df(2500)
+
+    def fund_fn(ticker: str, market: str, last_close):
+        assert ticker == "AAPL"
+        assert market == "US"
+        assert last_close == 100.0  # df.iloc[-1]["Close"]
+        return sentinel
+
+    results, failures = run_all(specs, _classify, pipeline, fundamentals_fn=fund_fn)
+    assert len(results) == 1
+    assert len(failures) == 0
+    assert results[0].fundamentals is sentinel
+
+
+def test_fundamentals_fn_exception_absorbed():
+    """fundamentals_fn 예외는 흡수 — 시세 정상 티커는 실패가 아니고 fund=None."""
+    specs = [TickerSpec("AAPL")]
+
+    def pipeline(sym: str) -> pd.DataFrame:
+        return _make_df(2500)
+
+    def fund_fn(ticker: str, market: str, last_close):
+        raise RuntimeError("EDGAR 다운")
+
+    results, failures = run_all(specs, _classify, pipeline, fundamentals_fn=fund_fn)
+    assert len(results) == 1  # 티커 실패 아님 (D-disc-10)
+    assert len(failures) == 0
+    assert results[0].fundamentals is None
+
+
+def test_fundamentals_fn_exception_absorbed_logs(caplog):
+    """예외 흡수 시 한국어 warning 로그 남긴다."""
+    specs = [TickerSpec("AAPL")]
+
+    def pipeline(sym: str) -> pd.DataFrame:
+        return _make_df(2500)
+
+    def fund_fn(ticker: str, market: str, last_close):
+        raise RuntimeError("boom")
+
+    with caplog.at_level("WARNING"):
+        run_all(specs, _classify, pipeline, fundamentals_fn=fund_fn)
+    assert "펀더멘털 fetch 예외 흡수" in caplog.text
+
+
+def test_fundamentals_backward_compat_default_none():
+    """fundamentals_fn 미전달 (3-인자 호출) 시 fundamentals=None — 하위호환."""
+    specs = [TickerSpec("AAPL")]
+
+    def pipeline(sym: str) -> pd.DataFrame:
+        return _make_df(2500)
+
+    results, failures = run_all(specs, _classify, pipeline)
+    assert len(results) == 1
+    assert results[0].fundamentals is None
+
+
 def test_max_workers_4(monkeypatch):
     captured = {}
 
