@@ -104,6 +104,23 @@ def _edgar_full():
     }
 
 
+def test_default_us_path_uses_edgar_cache(mocker):
+    # FUND-04/SC4 회귀 가드: edgar_fn 미주입 시 기본 클로저가 fetch_edgar_cached(7d 캐시)를
+    # 타야 한다(fetch_edgar_raw 직접 호출로 캐시 우회 금지). 같은 주 재실행 HIT 의 전제.
+    cached = mocker.patch(
+        "stocksig.io.edgar_client.fetch_edgar_cached", return_value=_edgar_full()
+    )
+    raw = mocker.patch("stocksig.io.edgar_client.fetch_edgar_raw", return_value=_edgar_full())
+    res = fetch_fundamentals("AAPL", "US", last_close=200.0, yf_fn=lambda t: {})
+    assert isinstance(res, FundamentalsResult)
+    assert cached.call_count == 1  # 캐시 경로 사용
+    assert raw.call_count == 0     # 기본 클로저가 raw 를 직접 부르지 않음
+    # 캐시 키는 "YYYYQn" 형태(주 단위 안정)
+    _, kwargs = cached.call_args[0], cached.call_args
+    assert cached.call_args[0][0] == "AAPL"
+    assert cached.call_args[0][1].endswith(("Q1", "Q2", "Q3", "Q4"))
+
+
 def test_fetch_fundamentals_all_edgar():
     # ① EDGAR 전지표 채움 → source 전부 EDGAR
     res = fetch_fundamentals(

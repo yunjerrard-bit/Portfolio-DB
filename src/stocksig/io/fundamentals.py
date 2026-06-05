@@ -294,7 +294,16 @@ def fetch_fundamentals(
             from stocksig.io import edgar_client
 
             def _default_edgar(t: str) -> dict:
-                return edgar_client.fetch_edgar_raw(t)
+                # FUND-04/SC4: 기본 경로도 7d 캐시(fetch_edgar_cached)를 타야 함.
+                # quarter_label 추정 = 현재 분기 "YYYYQn" — 주 단위 안정이라 같은 주
+                # 재실행 시 캐시 HIT. 실제 period_of_report 와 정확 일치 불필요(키는
+                # 주 단위 안정성만 필요). 정밀 분기/접수번호 델타는 후속 '펀더멘털
+                # 히스토리' phase 에서 교체(DART _default_dart 와 동일 패턴).
+                import datetime as _dt
+
+                _today = _dt.date.today()
+                _q = (_today.month - 1) // 3 + 1
+                return edgar_client.fetch_edgar_cached(t, f"{_today.year}Q{_q}")
 
             edgar_fn = _default_edgar
         try:
