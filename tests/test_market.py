@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 from diskcache import Cache
@@ -161,3 +162,72 @@ def test_logs_trading_day_count(mocker, mock_ohlcv_df, caplog):
 
     assert "AAPL" in caplog.text
     assert f"OHLCV {len(mock_ohlcv_df)} 거래일 수신 완료" in caplog.text
+
+
+def test_trailing_nan_close_trimmed(mocker, mock_ohlcv_df):
+    # 후행 미정산봉(Close=NaN, Volume만 존재) → 트리밍 후 iloc[-1]["Close"]가 비-NaN.
+    df_in = mock_ohlcv_df.copy()
+    df_in.iloc[-1, df_in.columns.get_loc("Close")] = np.nan
+    df_in.iloc[-1, df_in.columns.get_loc("High")] = np.nan
+    df_in.iloc[-1, df_in.columns.get_loc("Low")] = np.nan
+    # Volume은 유지 (미정산봉 특성)
+
+    mock_ticker_cls = mocker.patch("stocksig.io.market.yf.Ticker")
+    mock_ticker_cls.return_value.history.return_value = df_in
+
+    df = fetch_ohlcv("AAPL")
+
+    assert pd.notna(df.iloc[-1]["Close"])
+    assert len(df) == len(mock_ohlcv_df) - 1
+
+
+def test_trailing_two_nan_close_trimmed(mocker, mock_ohlcv_df):
+    # 마지막 2행 Close=NaN → 둘 다 제거, 길이 == 원본-2.
+    df_in = mock_ohlcv_df.copy()
+    close_loc = df_in.columns.get_loc("Close")
+    df_in.iloc[-1, close_loc] = np.nan
+    df_in.iloc[-2, close_loc] = np.nan
+
+    mock_ticker_cls = mocker.patch("stocksig.io.market.yf.Ticker")
+    mock_ticker_cls.return_value.history.return_value = df_in
+
+    df = fetch_ohlcv("AAPL")
+
+    assert pd.notna(df.iloc[-1]["Close"])
+    assert len(df) == len(mock_ohlcv_df) - 2
+
+
+def test_clean_ohlcv_row_count_unchanged(mocker, mock_ohlcv_df):
+    # 내부 NaN-close 없는 정상 df → 행 수 불변 (회귀 없음).
+    mock_ticker_cls = mocker.patch("stocksig.io.market.yf.Ticker")
+    mock_ticker_cls.return_value.history.return_value = mock_ohlcv_df
+
+    df = fetch_ohlcv("AAPL")
+
+    assert len(df) == len(mock_ohlcv_df)
+
+
+def test_trim_logs_korean_info(mocker, mock_ohlcv_df, caplog):
+    # 트리밍 발생 시 한국어 info 로그 1줄 출력.
+    df_in = mock_ohlcv_df.copy()
+    df_in.iloc[-1, df_in.columns.get_loc("Close")] = np.nan
+
+    mock_ticker_cls = mocker.patch("stocksig.io.market.yf.Ticker")
+    mock_ticker_cls.return_value.history.return_value = df_in
+
+    with caplog.at_level("INFO"):
+        fetch_ohlcv("AAPL")
+
+    assert "미정산/NaN 최신봉" in caplog.text
+
+
+def test_all_nan_close_raises_value_error(mocker, mock_ohlcv_df):
+    # 모든 Close가 NaN인 비정상 응답 → 트리밍 후 빈 df → ValueError fail-fast.
+    df_in = mock_ohlcv_df.copy()
+    df_in["Close"] = np.nan
+
+    mock_ticker_cls = mocker.patch("stocksig.io.market.yf.Ticker")
+    mock_ticker_cls.return_value.history.return_value = df_in
+
+    with pytest.raises(ValueError, match="AAPL"):
+        fetch_ohlcv("AAPL")
