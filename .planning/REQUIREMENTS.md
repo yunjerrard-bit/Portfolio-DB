@@ -1,0 +1,209 @@
+# Requirements: 표준편차 기반 주식 매매신호 + 포트폴리오 관리 시트
+
+**Defined:** 2026-05-19
+**Core Value:** 중앙값 ± 표준편차를 기준으로 한 색상 신호가 통합 포트폴리오 시트에서 정확하고 직관적으로 보여야 한다.
+
+## v1 Requirements
+
+### Input (INPUT)
+
+- [ ] **INPUT-01**: 사용자가 `tickers.txt`(또는 동등한 입력 파일)에 한 줄당 하나씩 티커를 적으면 스크립트가 이를 읽어 처리 대상 목록으로 사용한다
+- [ ] **INPUT-02**: 미국 티커(`AAPL`, `MSFT` 등)와 한국 티커(`005930.KS`, `035720.KQ` 등 `.KS`/`.KQ` 접미사 포함)를 한 파일 안에서 혼용 가능하다
+- [ ] **INPUT-03**: 입력 파일이 없거나 비어 있으면 명확한 한국어 에러 메시지와 함께 종료한다
+- [ ] **INPUT-04**: 잘못된 형식의 티커는 워크북 생성을 중단시키지 않고 "데이터 품질" 보고 항목에 기록한다
+- [ ] **INPUT-05**: `.env` 파일에서 `EDGAR_USER_AGENT_EMAIL`, `OPENDART_API_KEY`를 읽어 외부 API 인증에 사용한다
+
+### Market Data Acquisition (MKTD)
+
+- [ ] **MKTD-01**: 각 티커에 대해 Yahoo Finance에서 `today() − 4000 calendar days` 부터 오늘까지의 일봉 OHLCV(종가/고가/저가/거래량)를 받아온다
+- [ ] **MKTD-02**: yfinance는 `curl_cffi` 세션(Chrome 임퍼소네이션)으로 호출하여 차단 위험을 낮춘다
+- [ ] **MKTD-03**: Yahoo Finance 요청에는 tenacity 기반 지수 백오프 + 지터 재시도를 적용한다
+- [ ] **MKTD-04**: 한 티커의 수신 실패는 전체 실행을 중단시키지 않으며 "데이터 품질" 항목으로 기록된 뒤 다음 티커로 넘어간다
+- [ ] **MKTD-05**: 동일 날짜 재실행 시 OHLCV는 sqlite 디스크 캐시(24h TTL)에서 우선 조회한다
+- [ ] **MKTD-06**: 결과 DataFrame의 행 수가 예상치(약 2,500 거래일)의 50% 미만이면 부분 데이터로 간주하고 경고를 기록한다
+
+### Fundamentals Acquisition (FUND)
+
+- [ ] **FUND-01**: 미국 티커는 edgartools를 사용해 EDGAR(SEC)에서 PER, PEG, GPM, OPM 산출에 필요한 raw facts(EPS, Revenues, GrossProfit, OperatingIncomeLoss 등)를 받아온다
+- [ ] **FUND-02**: EDGAR 호출 시 User-Agent는 사용자 이메일(`yunjerrard@gmail.com`)을 포함하여 정책에 부합한다
+- [ ] **FUND-03**: 한국 티커는 OpenDartReader를 사용해 DART에서 동등 지표 산출에 필요한 재무 데이터를 받아온다(corp_code 매핑 포함)
+- [ ] **FUND-04**: EDGAR/DART 응답은 7일 TTL의 sqlite 캐시에 저장한다(재무 데이터는 분기 단위 변동)
+- [ ] **FUND-05**: 1차 소스(EDGAR/DART)에서 결손인 항목은 yfinance 또는 네이버 금융을 보완 소스로 사용하고 어느 소스가 사용되었는지 기록한다
+- [ ] **FUND-06**: 토큰버킷 throttle로 EDGAR ≤8 req/s, DART ≤2 req/s를 강제한다
+
+### Computation (COMP)
+
+- [ ] **COMP-01**: 종가·고가·저가 각각에 대해 EMA11, EMA22, EMA96, EMA192를 `pandas.ewm(span=N, adjust=False).mean()` 공식으로 계산한다
+- [ ] **COMP-02**: 종가/고가/저가와 4개 EMA의 차이를 모두 계산해 12개의 "차이" 시리즈를 생성한다
+- [ ] **COMP-03**: EMA11/22/96/192의 일별 변동(전일 대비 차분)을 각각 계산한다
+- [ ] **COMP-04**: 모든 데이터 열에 대해 **expanding window** 기준의 일별 중앙값과 일별 표준편차 시리즈를 생성한다 (그 날까지 누적된 모든 값으로 계산, look-ahead bias 없음)
+- [ ] **COMP-05**: 각 데이터 열의 10년 전체 누적 중앙값(스칼라)과 누적 표준편차(스칼라)를 별도로 산출한다
+- [ ] **COMP-06**: 거래량의 expanding window 중앙값·표준편차를 다른 지표와 동일한 방식으로 산출한다
+
+### Per-Ticker Sheet (SHEET)
+
+- [ ] **SHEET-01**: 각 티커마다 워크북에 별도의 시트가 생성되며 시트 이름은 티커 문자열이다
+- [ ] **SHEET-02**: 시트의 A1 셀에는 해당 티커 문자열이 기록된다
+- [ ] **SHEET-03**: 3행에는 각 데이터 열의 전체 누적 중앙값이 표시된다
+- [ ] **SHEET-04**: 4행에는 각 데이터 열의 전체 누적 표준편차가 표시된다
+- [ ] **SHEET-05**: 5행은 헤더 행으로 각 열의 의미를 한국어로 명시한다
+- [ ] **SHEET-06**: 6행부터는 데이터를 날짜 내림차순(최신이 상단)으로 정렬해 채운다
+- [ ] **SHEET-07**: 원천(OHLCV) / 1차(EMA) / 2차(차이·EMA 변동) 열은 가독성 좋은 순서로 그룹화하여 배치한다
+- [ ] **SHEET-08**: 각 데이터 열 옆에 "일별 중앙값"·"일별 표준편차" 열이 함께 배치되어 동일 행에서 비교할 수 있다
+
+### Technical Indicators (TECH)
+
+- [ ] **TECH-01**: 각 종목에 대해 Stochastic Slow를 표준 파라미터(`%K=14`, `Slowing=3`, `%D=3`)로 계산해 10년치 일별 시리즈를 생성한다 (pandas-ta 미사용, native pandas/numpy 구현)
+- [ ] **TECH-02**: 각 종목에 대해 RSI를 표준 기간(`period=14`, Wilder's smoothing)으로 계산해 10년치 일별 시리즈를 생성한다
+- [ ] **TECH-03**: 개별 종목 시트에 Stochastic Slow `%K`·`%D` 열과 RSI 열을 6행부터 날짜 내림차순으로 채운다 (다른 데이터와 동일 정렬)
+- [ ] **TECH-04**: Stochastic Slow 색 신호 — `값 ≤ 20` → 부드러운 초록 글자색(oversold/매수 기회), `값 ≥ 80` → 부드러운 빨강 글자색(overbought/과열), 그 외 → 기본
+- [ ] **TECH-05**: RSI 색 신호 — `값 ≤ 30` → 부드러운 초록 글자색, `값 ≥ 70` → 부드러운 빨강 글자색, 그 외 → 기본
+- [ ] **TECH-06**: 기술적 지표 색 신호도 σ-신호와 동일하게 정적 색 베이킹으로 셀에 직접 부여한다 (동적 조건부서식 미사용)
+- [ ] **TECH-07**: 시트1(통합 포트폴리오)에 각 티커 행마다 최신 Stochastic Slow `%K`와 최신 RSI 값이 색 신호와 함께 한 셀씩 표시된다
+
+### Signal Coloring (COLOR)
+
+- [ ] **COLOR-01**: 각 데이터 셀의 값을 그 날짜의 expanding window 중앙값·표준편차와 비교해 색상 신호를 정적으로 베이킹한다(셀에 직접 글자색·배경색 부여, 동적 조건부서식 미사용)
+- [ ] **COLOR-02**: `값 < 중앙값 − 1σ` 이고 `값 ≥ 중앙값 − 2σ` → 부드러운 초록 글자색
+- [ ] **COLOR-03**: `값 > 중앙값 + 1σ` 이고 `값 ≤ 중앙값 + 2σ` → 부드러운 빨강 글자색
+- [ ] **COLOR-04**: `값 < 중앙값 − 2σ` → 부드러운 초록 글자색 + 부드러운 초록 배경색
+- [ ] **COLOR-05**: `값 > 중앙값 + 2σ` → 부드러운 빨강 글자색 + 부드러운 빨강 배경색
+- [ ] **COLOR-06**: `|값 − 중앙값| ≤ 1σ` → 기본 글자색·배경색 유지
+- [ ] **COLOR-07**: 색상 톤은 시각적으로 강렬하지 않은 파스텔/부드러운 톤으로 정의되며 화면과 흑백 인쇄에서 모두 식별 가능하다
+
+### Portfolio Summary Sheet (PORT)
+
+- [ ] **PORT-01**: 워크북의 첫 번째 시트(시트1)는 통합 포트폴리오 요약 시트이다
+- [ ] **PORT-02**: 시트1은 입력에 포함된 모든 티커를 한 행씩 나열한다
+- [ ] **PORT-03**: 각 티커 행에는 티커명, 시장(US/KR), 최신 종가, 전일대비 등락률이 표시된다
+- [ ] **PORT-04**: 각 티커 행에는 EMA11/22/96/192 대비 최신 종가 차이의 색상 신호(±1σ/±2σ)가 4개 셀로 표시된다
+- [ ] **PORT-05**: 각 티커 행에는 PER, PEG, GPM, OPM 값과 (해당 시) 데이터 소스 출처(EDGAR/DART/yfinance/Naver)가 표시된다
+- [ ] **PORT-06**: 각 티커 행에는 최신 거래량의 색상 신호(±1σ/±2σ)가 표시된다
+- [ ] **PORT-07**: 시트1 각 티커 셀(이름)은 해당 종목 시트로의 하이퍼링크를 가진다
+- [ ] **PORT-08**: 시트1 상단에는 실행 시각 타임스탬프가 표시된다
+
+### Output (OUT)
+
+- [ ] **OUT-01**: 최종 결과물은 `portfolio_YYYYMMDD.xlsx` 형태의 단일 .xlsx 파일이다
+- [ ] **OUT-02**: 파일 생성에는 XlsxWriter 라이브러리를 사용한다
+- [ ] **OUT-03**: 매 실행마다 새 파일을 생성하며 기존 파일을 인플레이스 수정하지 않는다
+- [ ] **OUT-04**: 모든 시트의 1~5행은 사용자 편집 편의를 위해 fixed/frozen 처리한다
+
+### Execution & Quality (EXEC)
+
+- [ ] **EXEC-01**: `python main.py` 한 줄로 Windows 로컬 환경에서 실행 가능하다
+- [ ] **EXEC-02**: 의존성 관리는 `uv` + `pyproject.toml`을 사용한다
+- [ ] **EXEC-03**: 200개 티커 처리 시 외부 API rate-limit 위반 없이 완료된다 (max_workers=4 ThreadPoolExecutor + 소스별 토큰버킷 throttle)
+- [ ] **EXEC-04**: 데이터 누락·부분수신·인증실패 등 종목별 이슈를 (a) 콘솔 최종 실행 요약 블록, (b) 시트1 실패행, (c) 펀더멘털 셀 주석으로 한곳에서 확인 가능하게 한다 (D-01: 별도 "데이터 품질" 시트 미생성, 콘솔 요약으로 대체)
+- [ ] **EXEC-05**: 콘솔 로그는 한국어로 진행 상황(티커별 진행률, 캐시 hit/miss, 실패 요약)을 출력한다
+
+## v2 Requirements
+
+추후 milestone으로 보류. 인지하고 있지만 v1 범위 밖.
+
+### Scheduling (SCHED)
+
+- **SCHED-01**: Windows 작업 스케줄러 연동을 위한 `run.bat` 또는 무음 모드 옵션 제공
+- **SCHED-02**: 장마감 이후 자동 실행 가이드 문서
+
+### Advanced Analytics (ADV)
+
+- **ADV-01**: 종합 점수(다지표 합산) 시트 옵션
+- **ADV-02**: 백테스팅 모듈 (현재 σ-신호 규칙 적용 시 과거 수익률 추정)
+- **ADV-03**: 다중 timeframe(주봉·월봉) 신호
+
+### Performance (PERF)
+
+- **PERF-01**: `yf.download` 일괄 배치(group_by=ticker)로 200 티커 처리 시간 단축
+- **PERF-02**: 캐시 워밍 모드(첫 실행 시 캐시만 채우기)
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| 매매 자동 실행 / 브로커 API 연동 | 위험 카테고리 다름. 시각 신호 도구가 목적 |
+| BUY/SELL 텍스트 라벨 / 종합 점수 컬럼 | 사용자가 색상만으로 시각화를 명시적으로 선택 (시각 단순성 우선) |
+| 동적 종목 디스커버리(S&P500 자동 수집) | 200개 수준 개인 포트폴리오에 과한 복잡도 |
+| 일배치/스케줄러 자동화 | v1은 수동 실행으로 단순화. 필요 시 v2 (SCHED) |
+| GUI / 웹 대시보드 | 엑셀 자체가 UI |
+| 미국·한국 외 시장(일본·홍콩·유럽 등) | EDGAR/DART 재무지표 일관성 깨짐 |
+| 기존 xlsx 인플레이스 업데이트 | XlsxWriter는 인플레이스 미지원, 매번 새 파일 생성이 단순·안전 |
+| 동적 조건부서식 (Excel CF) | 정적 색 베이킹으로 성능·파일크기 문제 회피 |
+| pandas-ta 의존성 | 2026 archive 예정, NumPy 2 미지원. 4개 EMA는 native pandas.ewm으로 충분 |
+| 실시간 / intraday 데이터 | 일봉만 사용. 단순화 |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| INPUT-01 | Phase 1 | Pending |
+| INPUT-02 | Phase 1 | Pending |
+| INPUT-03 | Phase 1 | Pending |
+| INPUT-04 | Phase 2 | Pending |
+| INPUT-05 | Phase 1 | Pending |
+| MKTD-01 | Phase 1 | Pending |
+| MKTD-02 | Phase 1 | Pending |
+| MKTD-03 | Phase 1 | Pending |
+| MKTD-04 | Phase 2 | Pending |
+| MKTD-05 | Phase 2 | Pending |
+| MKTD-06 | Phase 2 | Pending |
+| FUND-01 | Phase 3 | Pending |
+| FUND-02 | Phase 3 | Pending |
+| FUND-03 | Phase 3 | Pending |
+| FUND-04 | Phase 3 | Pending |
+| FUND-05 | Phase 3 | Pending |
+| FUND-06 | Phase 3 | Pending |
+| COMP-01 | Phase 1 | Pending |
+| COMP-02 | Phase 1 | Pending |
+| COMP-03 | Phase 1 | Pending |
+| COMP-04 | Phase 1 | Pending |
+| COMP-05 | Phase 1 | Pending |
+| COMP-06 | Phase 1 | Pending |
+| SHEET-01 | Phase 1 | Pending |
+| SHEET-02 | Phase 1 | Pending |
+| SHEET-03 | Phase 1 | Pending |
+| SHEET-04 | Phase 1 | Pending |
+| SHEET-05 | Phase 1 | Pending |
+| SHEET-06 | Phase 1 | Pending |
+| SHEET-07 | Phase 1 | Pending |
+| SHEET-08 | Phase 1 | Pending |
+| COLOR-01 | Phase 1 | Pending |
+| COLOR-02 | Phase 1 | Pending |
+| COLOR-03 | Phase 1 | Pending |
+| COLOR-04 | Phase 1 | Pending |
+| COLOR-05 | Phase 1 | Pending |
+| COLOR-06 | Phase 1 | Pending |
+| COLOR-07 | Phase 1 | Pending |
+| PORT-01 | Phase 2 | Pending |
+| PORT-02 | Phase 2 | Pending |
+| PORT-03 | Phase 2 | Pending |
+| PORT-04 | Phase 2 | Pending |
+| PORT-05 | Phase 3 | Pending |
+| PORT-06 | Phase 2 | Pending |
+| PORT-07 | Phase 2 | Pending |
+| PORT-08 | Phase 2 | Pending |
+| OUT-01 | Phase 1 | Pending |
+| OUT-02 | Phase 1 | Pending |
+| OUT-03 | Phase 1 | Pending |
+| OUT-04 | Phase 4 | Pending |
+| EXEC-01 | Phase 1 | Pending |
+| EXEC-02 | Phase 1 | Pending |
+| EXEC-03 | Phase 2 | Pending |
+| EXEC-04 | Phase 4 | Pending |
+| EXEC-05 | Phase 2 | Pending |
+| TECH-01 | Phase 1 | Pending |
+| TECH-02 | Phase 1 | Pending |
+| TECH-03 | Phase 1 | Pending |
+| TECH-04 | Phase 1 | Pending |
+| TECH-05 | Phase 1 | Pending |
+| TECH-06 | Phase 1 | Pending |
+| TECH-07 | Phase 2 | Pending |
+
+**Coverage:**
+- v1 requirements: 62 total
+- Mapped to phases: 62 (100%)
+- Unmapped: 0
+
+---
+*Requirements defined: 2026-05-19*
+*Last updated: 2026-05-19 — traceability filled by roadmapper*
