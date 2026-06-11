@@ -228,6 +228,57 @@ def test_input_order_preserved(mock_pipeline_env, tmp_path, env_file):
     assert wb.sheetnames == ["시트1", "CSCO", "AAPL", "005930.KS", "MSFT"]
 
 
+def test_summary_block_emitted(mock_pipeline_env, tmp_path, env_file, caplog):
+    """EXEC-04 / SC3: run() 종료부에 한국어 실행 요약 블록 + 캐시 통계 + 실패 티커 목록."""
+    mock_pipeline_env["rows_per"]["BAD"] = "raise"
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\nBAD\nMSFT\n", encoding="utf-8")
+
+    caplog.set_level(logging.INFO)
+    run(tickers, env_file, tmp_path / "output")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    text = "\n".join(msgs)
+
+    # 요약 블록 헤더
+    assert any("실행 요약" in m for m in msgs), f"'실행 요약' 헤더 없음: {msgs[-8:]}"
+    # 티커 총/성공/실패 줄
+    assert any(
+        ("티커: 총" in m and "성공" in m and "실패" in m) for m in msgs
+    ), f"티커 요약 줄 없음: {msgs[-8:]}"
+    # 캐시 통계 줄 (캐시: + HIT)
+    assert any(("캐시:" in m and "HIT" in m) for m in msgs), (
+        f"캐시 통계 줄 없음: {msgs[-8:]}"
+    )
+    # 실패 티커 목록 줄 — BAD 포함
+    assert any(("실패 티커:" in m and "BAD" in m) for m in msgs), (
+        f"실패 티커 목록 줄 없음: {msgs[-8:]}"
+    )
+
+    # 회귀: 기존 per-call cache 로그 + runner 진행 요약이 여전히 출력됨 (대체 아님)
+    assert "cache MISS" in text, "기존 per-call cache 로그가 사라짐 (대체됨)"
+    assert any("총 3 티커 중 성공 2 / 실패 1" in m for m in msgs), (
+        "runner 진행 요약 로그가 사라짐"
+    )
+
+
+def test_summary_block_omits_failure_line_when_no_failures(
+    mock_pipeline_env, tmp_path, env_file, caplog
+):
+    """실패 0건이면 요약 블록 안 '실패 티커:' 줄은 생략된다."""
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\nMSFT\n", encoding="utf-8")
+
+    caplog.set_level(logging.INFO)
+    run(tickers, env_file, tmp_path / "output")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("실행 요약" in m for m in msgs), "요약 블록은 실패 0건에도 출력됨"
+    assert not any("실패 티커:" in m for m in msgs), (
+        "실패 0건인데 '실패 티커:' 줄이 출력됨"
+    )
+
+
 def test_scalars_roundtrip_through_attrs(mock_pipeline_env, tmp_path, env_file):
     """T-02-12 mitigation: enriched_df.attrs['scalars'] 가 runner 통과 후 보존됨.
 
