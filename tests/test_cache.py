@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -130,3 +131,67 @@ def test_fund_cache_miss_after_7d():
         cache_mod.put_fund("DART", "005930", "2026Q1", {"OPM": 0.15})
         frozen.tick(delta=pd.Timedelta(days=7, hours=1).to_pytimedelta())
         assert cache_mod.get_fund("DART", "005930", "2026Q1") is None
+
+
+# --- hit/miss 집계 카운터 (EXEC-04, lock 보호) ---
+
+
+def test_reset_then_get_stats_all_zero():
+    cache_mod.reset_cache_stats()
+    assert cache_mod.get_cache_stats() == {
+        "ohlcv_hit": 0,
+        "ohlcv_miss": 0,
+        "fund_hit": 0,
+        "fund_miss": 0,
+    }
+
+
+def test_ohlcv_hit_miss_counted():
+    cache_mod.reset_cache_stats()
+    cache_mod.get_ohlcv("MISSING")  # miss
+    cache_mod.put_ohlcv("AAPL", _df())
+    cache_mod.get_ohlcv("AAPL")  # hit
+    stats = cache_mod.get_cache_stats()
+    assert stats["ohlcv_hit"] == 1
+    assert stats["ohlcv_miss"] == 1
+
+
+def test_fund_hit_miss_counted():
+    cache_mod.reset_cache_stats()
+    cache_mod.get_fund("EDGAR", "AAPL", "2026Q3")  # miss
+    cache_mod.put_fund("EDGAR", "AAPL", "2026Q3", {"PER": 1.0})
+    cache_mod.get_fund("EDGAR", "AAPL", "2026Q3")  # hit
+    stats = cache_mod.get_cache_stats()
+    assert stats["fund_hit"] == 1
+    assert stats["fund_miss"] == 1
+
+
+def test_get_stats_returns_copy():
+    cache_mod.reset_cache_stats()
+    cache_mod.get_ohlcv("MISSING")  # miss → ohlcv_miss == 1
+    snapshot = cache_mod.get_cache_stats()
+    snapshot["ohlcv_miss"] = 999  # 반환값 변형
+    # 내부 _stats 는 오염되지 않아야 함
+    assert cache_mod.get_cache_stats()["ohlcv_miss"] == 1
+
+
+def test_concurrent_get_ohlcv_counts_exact():
+    """race: 같은 키로 다수 호출해도 hit+miss 합계가 호출 횟수와 정확히 일치 (lock 증명)."""
+    cache_mod.reset_cache_stats()
+    cache_mod.put_ohlcv("AAPL", _df())  # 이후 호출은 모두 HIT
+    n_calls = 200
+
+    def _call(_i):
+        return cache_mod.get_ohlcv("AAPL")
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(_call, range(n_calls)))
+
+    stats = cache_mod.get_cache_stats()
+    total = (
+        stats["ohlcv_hit"]
+        + stats["ohlcv_miss"]
+        + stats["fund_hit"]
+        + stats["fund_miss"]
+    )
+    assert total == n_calls, f"카운터 합계 {total} != 호출 {n_calls} (lost update)"

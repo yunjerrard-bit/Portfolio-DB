@@ -42,7 +42,7 @@ from stocksig.compute.weekly import (
     week_to_date_close_return,
 )
 from stocksig.config import load_env
-from stocksig.io import naver_scraper
+from stocksig.io import cache, naver_scraper
 from stocksig.io.fundamentals import fetch_fundamentals
 from stocksig.io.input import read_tickers_extended
 from stocksig.io.market import fetch_ohlcv_cached
@@ -230,6 +230,8 @@ def run(
 
     # D-07: run 시작마다 네이버 폴백 카운터 초기화 (다회 실행/장수 프로세스 안전).
     naver_scraper.reset_naver_count()
+    # EXEC-04: run 시작마다 캐시 hit/miss 카운터 초기화 (다회 실행 누적 방지).
+    cache.reset_cache_stats()
 
     specs = read_tickers_extended(tickers_path)
     logger.info("main | 티커 %d개 로드 완료", len(specs))
@@ -274,5 +276,25 @@ def run(
         failed_syms = ", ".join(f.spec.symbol for f in failures)
         logger.warning(
             "실패 %d개 — 시트1에 표시됨: %s", len(failures), failed_syms
+        )
+
+    # EXEC-04 / 로드맵 SC3 — 한국어 최종 실행 요약 블록 (콘솔/로그파일).
+    # 카운트(정수)·티커 심볼만 출력 (T-04-01: API 키·예외 원문 미포함).
+    stats = cache.get_cache_stats()
+    logger.info("════════ 실행 요약 ════════")
+    logger.info(
+        "티커: 총 %d / 성공 %d / 실패 %d", len(specs), len(results), len(failures)
+    )
+    logger.info(
+        "캐시: OHLCV HIT %d/MISS %d · 펀더멘털 HIT %d/MISS %d",
+        stats["ohlcv_hit"],
+        stats["ohlcv_miss"],
+        stats["fund_hit"],
+        stats["fund_miss"],
+    )
+    # TODO(04-03): 인증 상태 줄 (EDGAR/DART) — Plan 03에서 같은 블록에 삽입.
+    if failures:
+        logger.info(
+            "실패 티커: %s", ", ".join(f.spec.symbol for f in failures)
         )
     return output_path
