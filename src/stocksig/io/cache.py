@@ -11,6 +11,7 @@ Phase 3에서 7일 TTL 펀더멘털 캐시(`.cache/fundamentals`, 키
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,32 @@ _DEFAULT_DIR = Path(".cache/ohlcv")
 _TTL_SECONDS = 24 * 60 * 60
 
 _cache: Optional[Cache] = None
+
+# --- hit/miss 집계 카운터 (EXEC-04) -------------------------------------
+# 모듈 레벨 카운터 + lock. run 시작 시 reset_cache_stats() 로 초기화하고,
+# 종료부 요약 블록에서 get_cache_stats() 로 스냅샷을 읽는다.
+# read-modify-write `+=` 는 ThreadPoolExecutor fan-out(runner) 하에서
+# lost-update 가능 → _stats_lock 으로 보호 (Pitfall 3).
+_stats: dict[str, int] = {
+    "ohlcv_hit": 0,
+    "ohlcv_miss": 0,
+    "fund_hit": 0,
+    "fund_miss": 0,
+}
+_stats_lock = threading.Lock()
+
+
+def reset_cache_stats() -> None:
+    """run 시작 시 캐시 hit/miss 카운터 초기화 (EXEC-04)."""
+    with _stats_lock:
+        for k in _stats:
+            _stats[k] = 0
+
+
+def get_cache_stats() -> dict[str, int]:
+    """현재 hit/miss 카운터의 *복사본* 반환 (반환값 변형이 내부 상태를 오염시키지 않음)."""
+    with _stats_lock:
+        return dict(_stats)
 
 
 def _get_cache() -> Cache:
@@ -49,8 +76,12 @@ def get_ohlcv(ticker: str):
     value = _get_cache().get(key)
     if value is not None:
         logger.info("%s | 캐시 HIT (cache HIT, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["ohlcv_hit"] += 1
     else:
         logger.info("%s | 캐시 MISS (cache MISS, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["ohlcv_miss"] += 1
     return value
 
 
@@ -90,8 +121,12 @@ def get_fund(source: str, ticker: str, quarter_label: str):
     value = _get_fund_cache().get(key)
     if value is not None:
         logger.info("%s | 펀더멘털 캐시 HIT (cache HIT, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["fund_hit"] += 1
     else:
         logger.info("%s | 펀더멘털 캐시 MISS (cache MISS, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["fund_miss"] += 1
     return value
 
 
