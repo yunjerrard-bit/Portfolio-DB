@@ -115,23 +115,36 @@ def _fill_us(
     last_close: float,
     edgar_fn: Callable[[str], dict],
     yf_fn: Callable[[str], dict],
+    skip_edgar: bool = False,
 ) -> FundamentalsResult:
-    """EDGAR 1차 → 결손 지표만 yf 보완 (per-metric provenance, D-03)."""
-    raw = edgar_fn(ticker)
-    quarter = raw.get("quarter_label") or "?"
-    edgar_meta = f"EDGAR · {quarter}"
+    """EDGAR 1차 → 결손 지표만 yf 보완 (per-metric provenance, D-03).
 
-    # 1차: EDGAR 산식
-    per = _compute_per(last_close, raw.get("eps_ttm"))
-    peg = _compute_peg(per.value, raw.get("eps_ttm"), raw.get("eps_prior"))
-    gpm = _compute_margin(raw.get("gross_profit"), raw.get("revenue"))
-    opm = _compute_margin(raw.get("op_income"), raw.get("revenue"))
+    skip_edgar=True (인증 실패) 면 EDGAR 1차 호출을 건너뛰고 모든 1차 지표를
+    결손(note="EDGAR 인증 실패")으로 둔 뒤, yf 폴백은 그대로 실행한다 — yf 는
+    EDGAR 와 독립 소스이므로 살린다 (A4 확정).
+    """
+    if skip_edgar:
+        # EDGAR 1차 스킵 — raw 호출 없이 전 지표 결손(인증 실패 사유). yf 폴백은 유지.
+        per = _empty_cell("EDGAR 인증 실패")
+        peg = _empty_cell("EDGAR 인증 실패")
+        gpm = _empty_cell("EDGAR 인증 실패")
+        opm = _empty_cell("EDGAR 인증 실패")
+    else:
+        raw = edgar_fn(ticker)
+        quarter = raw.get("quarter_label") or "?"
+        edgar_meta = f"EDGAR · {quarter}"
 
-    # EDGAR 로 채운 지표에 source/note 부여
-    for cell in (per, peg, gpm, opm):
-        if cell.value is not None:
-            cell.source = "EDGAR"
-            cell.note = edgar_meta
+        # 1차: EDGAR 산식
+        per = _compute_per(last_close, raw.get("eps_ttm"))
+        peg = _compute_peg(per.value, raw.get("eps_ttm"), raw.get("eps_prior"))
+        gpm = _compute_margin(raw.get("gross_profit"), raw.get("revenue"))
+        opm = _compute_margin(raw.get("op_income"), raw.get("revenue"))
+
+        # EDGAR 로 채운 지표에 source/note 부여
+        for cell in (per, peg, gpm, opm):
+            if cell.value is not None:
+                cell.source = "EDGAR"
+                cell.note = edgar_meta
 
     # 2차: EDGAR 결손 *개별 지표만* yf 보완 (1차 채운 지표는 덮어쓰지 않음)
     missing = [c for c in (per, peg, gpm, opm) if c.value is None]
@@ -172,6 +185,7 @@ def _fill_kr(
     dart_fn: Callable[[str], dict],
     naver_fn: Callable[[str], float | None],
     yf_fn: Callable[[str], dict],
+    skip_dart: bool = False,
 ) -> FundamentalsResult:
     """DART 1차 → metric별 차등 폴백 (PER: DART→Naver→yf; GPM/OPM: DART→yf), D-04.
 
@@ -182,23 +196,34 @@ def _fill_kr(
         OPM = 영업이익 / 매출액
     per-metric: 1차(DART)에서 채운 지표는 폴백으로 덮어쓰지 않음.
     Naver 는 PER 단일 지표 폴백 전용(D-07 상한은 naver_fn 내부에서 통제).
+
+    skip_dart=True (인증 실패) 면 DART 1차 호출을 건너뛰고 전 지표를 결손
+    (note="DART 인증 실패")으로 둔 뒤, Naver(PER)→yf 폴백 체인은 그대로 작동한다
+    (독립 소스 유지, A4 확정).
     """
-    raw = dart_fn(ticker) or {}
-    dart_note = raw.get("note")
+    if skip_dart:
+        # DART 1차 스킵 — raw 호출 없이 전 지표 결손(인증 실패 사유). Naver/yf 폴백 유지.
+        per = _empty_cell("DART 인증 실패")
+        peg = _empty_cell("DART 인증 실패")
+        gpm = _empty_cell("DART 인증 실패")
+        opm = _empty_cell("DART 인증 실패")
+    else:
+        raw = dart_fn(ticker) or {}
+        dart_note = raw.get("note")
 
-    # 1차: DART 산식 (eps=기본주당이익 KRW, eps_prior=전년 기본주당이익).
-    eps = raw.get("eps")
-    eps_prior = raw.get("eps_prior")
-    per = _compute_per(last_close, eps)
-    peg = _compute_peg(per.value, eps, eps_prior)
-    gpm = _compute_margin(raw.get("gross_profit"), raw.get("revenue"))
-    opm = _compute_margin(raw.get("op_income"), raw.get("revenue"))
+        # 1차: DART 산식 (eps=기본주당이익 KRW, eps_prior=전년 기본주당이익).
+        eps = raw.get("eps")
+        eps_prior = raw.get("eps_prior")
+        per = _compute_per(last_close, eps)
+        peg = _compute_peg(per.value, eps, eps_prior)
+        gpm = _compute_margin(raw.get("gross_profit"), raw.get("revenue"))
+        opm = _compute_margin(raw.get("op_income"), raw.get("revenue"))
 
-    # DART 로 채운 지표에 source/note 부여.
-    for cell in (per, peg, gpm, opm):
-        if cell.value is not None:
-            cell.source = "DART"
-            cell.note = dart_note or "DART"
+        # DART 로 채운 지표에 source/note 부여.
+        for cell in (per, peg, gpm, opm):
+            if cell.value is not None:
+                cell.source = "DART"
+                cell.note = dart_note or "DART"
 
     used = []  # 폴백 사용 경로 로그 누적.
 
@@ -266,6 +291,8 @@ def fetch_fundamentals(
     yf_fn: Callable[[str], dict] | None = None,
     dart_fn: Callable[[str], dict] | None = None,
     naver_fn: Callable[[str], float | None] | None = None,
+    skip_edgar: bool = False,
+    skip_dart: bool = False,
 ) -> FundamentalsResult:
     """티커 펀더멘털 fetch + 산식 + provenance. raise 금지 (전 경로 흡수).
 
@@ -277,6 +304,8 @@ def fetch_fundamentals(
         yf_fn: yf info fetcher (US/KR 최후 폴백, 테스트 주입용; 기본 yf_fundamentals).
         dart_fn: DART raw dict fetcher (KR 1차, 테스트 주입용; 기본 dart_client).
         naver_fn: Naver PER fetcher (KR 2차, 테스트 주입용; 기본 naver_scraper).
+        skip_edgar: 인증 실패 시 EDGAR 1차 호출을 건너뛴다 (yf 폴백은 유지, A4).
+        skip_dart: 인증 실패 시 DART 1차 호출을 건너뛴다 (Naver/yf 폴백은 유지, A4).
 
     Returns:
         FundamentalsResult — 결손 지표는 MetricCell.value=None + 사유 note.
@@ -290,7 +319,9 @@ def fetch_fundamentals(
         yf_fn = yf_fundamentals.fetch_yf_info
 
     if resolved_market == "US":
-        if edgar_fn is None:
+        # skip_edgar=True 면 EDGAR raw 호출 자체를 건너뛰므로 기본 클라이언트 lazy
+        # import 도 생략한다(_fill_us 가 edgar_fn 을 호출하지 않음).
+        if edgar_fn is None and not skip_edgar:
             from stocksig.io import edgar_client
 
             def _default_edgar(t: str) -> dict:
@@ -307,13 +338,14 @@ def fetch_fundamentals(
 
             edgar_fn = _default_edgar
         try:
-            return _fill_us(ticker, last_close, edgar_fn, yf_fn)
+            return _fill_us(ticker, last_close, edgar_fn, yf_fn, skip_edgar=skip_edgar)
         except Exception as e:  # D-disc-10: 펀더멘털 결손 ≠ 티커 실패
             logger.warning("%s | 펀더멘털 fetch 예외 흡수: %s", ticker, e)
             return _empty_result(f"조회 실패: {e}")
 
     # KR 경로 (D-04: DART → Naver(PER) / yf(GPM/OPM·잔여) metric별 차등).
-    if dart_fn is None:
+    # skip_dart=True 면 DART raw 호출 자체를 건너뛰므로 기본 클라이언트 lazy import 생략.
+    if dart_fn is None and not skip_dart:
         from stocksig.io import dart_client
 
         def _default_dart(t: str) -> dict:
@@ -331,7 +363,9 @@ def fetch_fundamentals(
         naver_fn = naver_scraper.fetch_naver_per
 
     try:
-        return _fill_kr(ticker, last_close, dart_fn, naver_fn, yf_fn)
+        return _fill_kr(
+            ticker, last_close, dart_fn, naver_fn, yf_fn, skip_dart=skip_dart
+        )
     except Exception as e:  # D-disc-10: 펀더멘털 결손 ≠ 티커 실패
         logger.warning("%s | 펀더멘털 fetch 예외 흡수: %s", ticker, e)
         return _empty_result(f"조회 실패: {e}")
