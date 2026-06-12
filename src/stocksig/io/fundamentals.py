@@ -340,8 +340,12 @@ def fetch_fundamentals(
         try:
             return _fill_us(ticker, last_close, edgar_fn, yf_fn, skip_edgar=skip_edgar)
         except Exception as e:  # D-disc-10: 펀더멘털 결손 ≠ 티커 실패
-            logger.warning("%s | 펀더멘털 fetch 예외 흡수: %s", ticker, e)
-            return _empty_result(f"조회 실패: {e}")
+            # T-04-03: 예외 원문 보간 금지 — requests 예외 메시지에 crtfc_key 등
+            # 자격증명이 포함된 URL이 담길 수 있어 로그에는 타입명만, note 는 고정 사유만.
+            logger.warning(
+                "%s | 펀더멘털 fetch 예외 흡수: %s", ticker, type(e).__name__
+            )
+            return _empty_result("조회 실패: 데이터 소스 오류")
 
     # KR 경로 (D-04: DART → Naver(PER) / yf(GPM/OPM·잔여) metric별 차등).
     # skip_dart=True 면 DART raw 호출 자체를 건너뛰므로 기본 클라이언트 lazy import 생략.
@@ -367,5 +371,8 @@ def fetch_fundamentals(
             ticker, last_close, dart_fn, naver_fn, yf_fn, skip_dart=skip_dart
         )
     except Exception as e:  # D-disc-10: 펀더멘털 결손 ≠ 티커 실패
-        logger.warning("%s | 펀더멘털 fetch 예외 흡수: %s", ticker, e)
-        return _empty_result(f"조회 실패: {e}")
+        # T-04-03: 예외 원문 보간 금지 (US 경로와 동일 — crtfc_key 누설 차단).
+        logger.warning(
+            "%s | 펀더멘털 fetch 예외 흡수: %s", ticker, type(e).__name__
+        )
+        return _empty_result("조회 실패: 데이터 소스 오류")

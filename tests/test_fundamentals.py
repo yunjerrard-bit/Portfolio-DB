@@ -449,3 +449,64 @@ def test_skip_defaults_false_no_regression():
     )
     assert res.per.source == "EDGAR"
     assert res.gpm.source == "EDGAR"
+
+
+# --- T-04-03 회귀: 예외 원문(자격증명 URL) 로그/note 누설 차단 (CR-01) ------
+
+def test_fetch_fundamentals_exception_no_secret_leak(caplog):
+    """DART 예외 메시지에 crtfc_key 가 담겨도 로그·note 에 원문이 보간되지 않는다.
+
+    opendartreader 경유 requests 예외는 `crtfc_key=<API 키>` 가 포함된 전체
+    요청 URL 을 메시지에 담을 수 있다. 외곽 except 는 타입명만 로깅하고
+    note 는 고정 사유만 사용해야 한다 (T-04-03 / 04-REVIEW CR-01).
+    """
+    import dataclasses
+    import logging
+
+    secret = "crtfc_key=SUPER-SECRET-KEY-12345"
+
+    def _boom(t):
+        raise RuntimeError(
+            f"HTTPSConnectionPool: /api/fnlttSinglAcnt.json?{secret} failed"
+        )
+
+    caplog.set_level(logging.WARNING, logger="stocksig.io.fundamentals")
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=_boom,
+        naver_fn=lambda t: None,
+        yf_fn=lambda t: {},
+    )
+    assert isinstance(res, FundamentalsResult)
+    # 로그: 예외 원문 금지, 타입명만 허용
+    assert secret not in caplog.text
+    assert "RuntimeError" in caplog.text
+    # 워크북 note: 고정 사유만, 원문 금지
+    for f in dataclasses.fields(res):
+        cell = getattr(res, f.name)
+        assert secret not in (cell.note or "")
+        assert (cell.note or "") == "조회 실패: 데이터 소스 오류"
+
+
+def test_fetch_fundamentals_us_exception_no_secret_leak(caplog):
+    """US(EDGAR) 외곽 except 도 동일하게 원문 보간이 없어야 한다."""
+    import dataclasses
+    import logging
+
+    marker = "User-Agent: someone@example.com"
+
+    def _boom(t):
+        raise RuntimeError(f"403 Forbidden ({marker})")
+
+    caplog.set_level(logging.WARNING, logger="stocksig.io.fundamentals")
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=100.0,
+        edgar_fn=_boom,
+        yf_fn=lambda t: {},
+    )
+    assert isinstance(res, FundamentalsResult)
+    assert marker not in caplog.text
+    assert "RuntimeError" in caplog.text
+    for f in dataclasses.fields(res):
+        cell = getattr(res, f.name)
+        assert marker not in (cell.note or "")

@@ -96,8 +96,9 @@ def process_ticker(
             last_close = df.iloc[-1].get("Close")
             fundamentals = fundamentals_fn(spec.symbol, market, last_close)
         except Exception as e:  # noqa: BLE001 — D-disc-10: 펀더멘털 결손 ≠ 티커 실패
+            # T-04-03: 예외 원문 보간 금지 — 자격증명 포함 URL 누설 차단(타입명만).
             logger.warning(
-                "%s | 펀더멘털 fetch 예외 흡수: %s", spec.symbol, e
+                "%s | 펀더멘털 fetch 예외 흡수: %s", spec.symbol, type(e).__name__
             )
             fundamentals = None
 
