@@ -372,3 +372,80 @@ def test_fetch_fundamentals_kr_absorbs_exception():
     )
     assert isinstance(res, FundamentalsResult)
     assert res.per.value is None
+
+
+# --- skip_edgar / skip_dart (04-03 Task 2: 1차만 스킵, yf 폴백 유지) ---------
+
+def test_skip_edgar_skips_primary_but_keeps_yf(monkeypatch):
+    # skip_edgar=True → EDGAR 1차 edgar_fn 미호출, yf 폴백은 여전히 채움(독립 소스, A4).
+    edgar_calls = {"n": 0}
+    yf_calls = {"n": 0}
+
+    def _edgar(t):
+        edgar_calls["n"] += 1
+        return _edgar_full()
+
+    def _yf(t):
+        yf_calls["n"] += 1
+        return {"PER": 30.0, "PEG": 2.0, "GPM": 0.478, "OPM": 0.32}
+
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=200.0,
+        edgar_fn=_edgar, yf_fn=_yf,
+        skip_edgar=True,
+    )
+    # EDGAR 1차 호출 안 됨
+    assert edgar_calls["n"] == 0
+    # yf 폴백은 호출되어 지표를 채움 (독립 소스 유지)
+    assert yf_calls["n"] == 1
+    assert res.per.value == 30.0
+    assert res.per.source == "yf"
+    assert res.gpm.value == 0.478
+
+
+def test_skip_edgar_missing_metric_note_when_no_yf():
+    # skip_edgar=True 이고 yf 도 비면 결손 + EDGAR 인증 실패류 사유, EDGAR source 없음.
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=200.0,
+        edgar_fn=lambda t: _edgar_full(),
+        yf_fn=lambda t: {},
+        skip_edgar=True,
+    )
+    assert res.per.value is None
+    assert res.per.source != "EDGAR"
+    assert "EDGAR 인증 실패" in (res.per.note or "")
+
+
+def test_skip_dart_skips_primary_but_keeps_naver_yf_chain():
+    # skip_dart=True → DART 1차 미호출, Naver→yf 폴백 체인은 작동.
+    dart_calls = {"n": 0}
+
+    def _dart(t):
+        dart_calls["n"] += 1
+        return _dart_full()
+
+    res = fetch_fundamentals(
+        "005930.KS", "KR", last_close=80_000.0,
+        dart_fn=_dart,
+        naver_fn=lambda t: 12.3,  # Naver PER 폴백
+        yf_fn=lambda t: {"GPM": 0.42},
+        skip_dart=True,
+    )
+    assert dart_calls["n"] == 0
+    # Naver PER 폴백 작동
+    assert res.per.value == 12.3
+    assert res.per.source == "Naver"
+    # yf GPM 폴백 작동
+    assert res.gpm.value == 0.42
+    assert res.gpm.source == "yf"
+
+
+def test_skip_defaults_false_no_regression():
+    # skip 미전달(기본 False) → 기존 동작과 동일(EDGAR 1차 채움).
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=200.0,
+        edgar_fn=lambda t: _edgar_full(),
+        yf_fn=lambda t: {},
+    )
+    assert res.per.source == "EDGAR"
+    assert res.gpm.source == "EDGAR"
