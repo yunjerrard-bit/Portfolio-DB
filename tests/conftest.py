@@ -17,6 +17,35 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import stocksig.io.cache as _cache_mod
+
+
+@pytest.fixture(autouse=True)
+def _isolated_disk_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """모든 테스트에서 디스크 캐시를 tmp_path로 격리 (운영 `.cache/` 오염 방지).
+
+    `.cache/ohlcv`는 상대 경로라 프로젝트 루트에서 pytest 실행 시 운영 캐시가
+    그대로 쓰인다. yf.Ticker 등 캐시 계층 *아래*를 mock한 테스트가 run()을
+    돌리면 합성 OHLCV가 `put_ohlcv()`로 운영 캐시에 저장되어, 같은 날 실제
+    main.py 실행이 가짜 데이터를 cache HIT으로 읽는 사고가 발생했다
+    (AAPL 시트 2026-05-20 고정 + 합성 가격). autouse로 전 테스트에 강제 격리.
+    개별 테스트의 자체 격리 픽스처는 이 위에 덮어써도 무방하다.
+    """
+    monkeypatch.setattr(_cache_mod, "_DEFAULT_DIR", tmp_path / ".cache" / "ohlcv")
+    monkeypatch.setattr(_cache_mod, "_cache", None)
+    monkeypatch.setattr(_cache_mod, "_FUND_DIR", tmp_path / ".cache" / "fundamentals")
+    monkeypatch.setattr(_cache_mod, "_fund_cache", None)
+    yield
+    # Windows: diskcache 파일 핸들을 닫아야 tmp_path 정리가 실패하지 않는다.
+    for attr in ("_cache", "_fund_cache"):
+        c = getattr(_cache_mod, attr, None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+        monkeypatch.setattr(_cache_mod, attr, None)
+
 
 @pytest.fixture
 def mock_ohlcv_df() -> pd.DataFrame:
