@@ -43,6 +43,7 @@ from stocksig.compute.weekly import (
 )
 from stocksig.config import load_env
 from stocksig.io import cache, naver_scraper
+from stocksig.io.auth_check import AuthStatus, ping_dart, ping_edgar
 from stocksig.io.fundamentals import fetch_fundamentals
 from stocksig.io.input import read_tickers_extended
 from stocksig.io.market import fetch_ohlcv_cached
@@ -213,6 +214,20 @@ def _make_pipeline() -> Callable[[str], pd.DataFrame]:
     return pipeline
 
 
+def _auth_label(ok: bool | None, note: str | None) -> str:
+    """인증 상태 라벨 — 요약 인증 줄 출력용.
+
+    None(ping 미실행) → "해당없음", True → "OK", False → "실패(<note>)".
+    note 는 auth_check 에서 이미 키/UA 미포함 고정 사유이므로 그대로 출력해도
+    안전하다 (T-04-04 — API 키·UA 원문 미노출).
+    """
+    if ok is None:
+        return "해당없음"
+    if ok:
+        return "OK"
+    return f"실패({note})" if note else "실패"
+
+
 def run(
     tickers_path: str | Path = "tickers.txt",
     env_path: str | Path | None = None,
@@ -236,10 +251,30 @@ def run(
     specs = read_tickers_extended(tickers_path)
     logger.info("main | 티커 %d개 로드 완료", len(specs))
 
-    # PASS 1 — fan-out (+ PASS 1b: 펀더멘털 fetch_fundamentals 클로저 주입)
+    # EXEC-04: 실행 시작 시 조건부 인증 사전검증 (D-04 — 해당 시장 티커 있을 때만 1회씩).
+    # ping 은 raise하지 않고 (ok, 키/UA 미포함 사유) 만 반환한다(D-02 fail-fast 아님).
+    markets = {classify_market(s.symbol) for s in specs}
+    auth = AuthStatus()
+    if "US" in markets:
+        auth.edgar_ok, auth.edgar_note = ping_edgar()
+    if "KR" in markets:
+        auth.dart_ok, auth.dart_note = ping_dart()
+
+    # PASS 1b: 인증 실패 소스의 1차 펀더멘털 호출만 스킵하는 클로저 주입.
+    # yf/Naver 폴백은 독립 소스이므로 유지된다(A4 확정).
+    def _fundamentals_with_auth(ticker, market, last_close):
+        return fetch_fundamentals(
+            ticker,
+            market,
+            last_close,
+            skip_edgar=(market == "US" and auth.edgar_ok is False),
+            skip_dart=(market == "KR" and auth.dart_ok is False),
+        )
+
+    # PASS 1 — fan-out (+ PASS 1b: 인증 배선된 펀더멘털 클로저 주입)
     pipeline = _make_pipeline()
     results, failures = run_all(
-        specs, classify_market, pipeline, fundamentals_fn=fetch_fundamentals
+        specs, classify_market, pipeline, fundamentals_fn=_fundamentals_with_auth
     )
 
     # PASS 2 — write
@@ -285,6 +320,13 @@ def run(
     logger.info(
         "티커: 총 %d / 성공 %d / 실패 %d", len(specs), len(results), len(failures)
     )
+    # 인증 상태 줄 (EXEC-04) — note 는 auth_check 에서 이미 키/UA 미포함 고정 사유
+    # 이므로 _auth_label 이 그대로 출력해도 안전(T-04-04 보안).
+    logger.info(
+        "인증: EDGAR %s | DART %s",
+        _auth_label(auth.edgar_ok, auth.edgar_note),
+        _auth_label(auth.dart_ok, auth.dart_note),
+    )
     logger.info(
         "캐시: OHLCV HIT %d/MISS %d · 펀더멘털 HIT %d/MISS %d",
         stats["ohlcv_hit"],
@@ -292,7 +334,6 @@ def run(
         stats["fund_hit"],
         stats["fund_miss"],
     )
-    # TODO(04-03): 인증 상태 줄 (EDGAR/DART) — Plan 03에서 같은 블록에 삽입.
     if failures:
         logger.info(
             "실패 티커: %s", ", ".join(f.spec.symbol for f in failures)
