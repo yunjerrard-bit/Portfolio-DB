@@ -63,7 +63,7 @@ def env_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def mock_pipeline_env(monkeypatch, tmp_path):
-    """fetch_ohlcv stub + cache dir 격리 — 모든 N-티커 smoke 가 사용."""
+    """fetch_ohlcv stub + cache dir 격리 + 인증 ping stub — 모든 N-티커 smoke 가 사용."""
     call_counter = {"count": 0, "rows_per": {}}
 
     # 캐시 격리 — tmp_path/.cache/ohlcv + reset 전역 _cache
@@ -81,6 +81,12 @@ def mock_pipeline_env(monkeypatch, tmp_path):
         return _make_ohlcv(rows=rows, seed=seed)
 
     monkeypatch.setattr(market_mod, "fetch_ohlcv", _stub_fetch)
+
+    # 인증 ping stub — 네트워크 없이 OK (04-03). 개별 테스트가 monkeypatch 로 재설정 가능.
+    import stocksig.main_run as main_mod
+
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (True, None))
+    monkeypatch.setattr(main_mod, "ping_dart", lambda: (True, None))
     yield call_counter
 
 
@@ -306,3 +312,141 @@ def test_scalars_roundtrip_through_attrs(mock_pipeline_env, tmp_path, env_file):
     assert "median" in scalars["Close"]
     assert "std" in scalars["Close"]
     assert isinstance(scalars["Close"]["median"], float)
+
+
+# --- 04-03 Task 3: 조건부 인증 ping 배선 + skip 클로저 + 요약 인증 줄 -------
+
+
+def test_ping_edgar_called_when_us_ticker(mock_pipeline_env, tmp_path, env_file, monkeypatch):
+    """US 티커 포함 시 ping_edgar 호출됨."""
+    import stocksig.main_run as main_mod
+
+    calls = {"edgar": 0, "dart": 0}
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (calls.__setitem__("edgar", calls["edgar"] + 1) or (True, None)))
+    monkeypatch.setattr(main_mod, "ping_dart", lambda: (calls.__setitem__("dart", calls["dart"] + 1) or (True, None)))
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\n005930.KS\n", encoding="utf-8")
+    run(tickers, env_file, tmp_path / "output")
+
+    assert calls["edgar"] == 1
+    assert calls["dart"] == 1
+
+
+def test_ping_conditional_us_only(mock_pipeline_env, tmp_path, env_file, monkeypatch):
+    """D-04 조건부: US 티커만 있으면 ping_dart 미호출."""
+    import stocksig.main_run as main_mod
+
+    calls = {"edgar": 0, "dart": 0}
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (calls.__setitem__("edgar", calls["edgar"] + 1) or (True, None)))
+    monkeypatch.setattr(main_mod, "ping_dart", lambda: (calls.__setitem__("dart", calls["dart"] + 1) or (True, None)))
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\nMSFT\n", encoding="utf-8")
+    run(tickers, env_file, tmp_path / "output")
+
+    assert calls["edgar"] == 1
+    assert calls["dart"] == 0
+
+
+def test_ping_conditional_kr_only(mock_pipeline_env, tmp_path, env_file, monkeypatch):
+    """D-04 조건부: KR 티커만 있으면 ping_edgar 미호출."""
+    import stocksig.main_run as main_mod
+
+    calls = {"edgar": 0, "dart": 0}
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (calls.__setitem__("edgar", calls["edgar"] + 1) or (True, None)))
+    monkeypatch.setattr(main_mod, "ping_dart", lambda: (calls.__setitem__("dart", calls["dart"] + 1) or (True, None)))
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("005930.KS\n035720.KQ\n", encoding="utf-8")
+    run(tickers, env_file, tmp_path / "output")
+
+    assert calls["edgar"] == 0
+    assert calls["dart"] == 1
+
+
+def test_ping_failure_continues_and_builds_workbook(
+    mock_pipeline_env, tmp_path, env_file, monkeypatch
+):
+    """D-02: ping_edgar 가 (False, note) 여도 run() 이 예외 없이 워크북 생성."""
+    import stocksig.main_run as main_mod
+
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (False, "EDGAR 403 (UA 확인)"))
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\nMSFT\n", encoding="utf-8")
+    out = run(tickers, env_file, tmp_path / "output")
+
+    assert out.exists()
+    wb = openpyxl.load_workbook(out)
+    assert wb.sheetnames[0] == "시트1"
+
+
+def test_ping_failure_propagates_skip_edgar(
+    mock_pipeline_env, tmp_path, env_file, monkeypatch
+):
+    """ping 실패 시 US 종목 펀더멘털 fetch 에 skip_edgar=True 전달(클로저 경유)."""
+    import stocksig.main_run as main_mod
+
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (False, "EDGAR 인증 실패"))
+
+    captured = {"calls": []}
+
+    def _spy_fund(ticker, market, last_close, **kwargs):
+        captured["calls"].append((ticker, market, kwargs.get("skip_edgar"), kwargs.get("skip_dart")))
+        return main_mod.fetch_fundamentals(ticker, market, last_close, **kwargs)
+
+    monkeypatch.setattr(main_mod, "fetch_fundamentals", _spy_fund)
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\n", encoding="utf-8")
+    run(tickers, env_file, tmp_path / "output")
+
+    us_calls = [c for c in captured["calls"] if c[1] == "US"]
+    assert us_calls, f"US 펀더멘털 호출 없음: {captured['calls']}"
+    assert all(c[2] is True for c in us_calls), f"skip_edgar 전파 실패: {us_calls}"
+
+
+def test_summary_has_auth_line(mock_pipeline_env, tmp_path, env_file, caplog):
+    """종료부 요약 블록에 '인증:' + EDGAR + DART 줄이 출력됨."""
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\n005930.KS\n", encoding="utf-8")
+
+    caplog.set_level(logging.INFO)
+    run(tickers, env_file, tmp_path / "output")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(
+        ("인증:" in m and "EDGAR" in m and "DART" in m) for m in msgs
+    ), f"인증 요약 줄 없음: {msgs[-8:]}"
+
+
+def test_summary_auth_line_no_secret_leak(
+    mock_pipeline_env, tmp_path, env_file, caplog, monkeypatch
+):
+    """보안: 인증 줄에 OPENDART_API_KEY 값/EDGAR UA 이메일이 포함되지 않음."""
+    import stocksig.main_run as main_mod
+
+    # ping 이 실패 사유를 돌려줘도(_auth_label 이 note 사용) 키/UA 가 새지 않아야 함.
+    monkeypatch.setattr(main_mod, "ping_edgar", lambda: (False, "EDGAR 인증 실패"))
+    monkeypatch.setattr(main_mod, "ping_dart", lambda: (False, "DART 인증 실패"))
+
+    secret_email = "yunjerrard@gmail.com"
+    secret_key = "supersecretdartkey123456"
+    env_p = tmp_path / ".env"
+    env_p.write_text(
+        f"EDGAR_USER_AGENT_EMAIL={secret_email}\nOPENDART_API_KEY={secret_key}\n",
+        encoding="utf-8",
+    )
+
+    tickers = tmp_path / "tickers.txt"
+    tickers.write_text("AAPL\n005930.KS\n", encoding="utf-8")
+
+    caplog.set_level(logging.INFO)
+    run(tickers, env_p, tmp_path / "output")
+
+    auth_lines = [r.getMessage() for r in caplog.records if "인증:" in r.getMessage()]
+    assert auth_lines, "인증 줄이 없음"
+    for line in auth_lines:
+        assert secret_email not in line, f"UA 이메일 누설: {line}"
+        assert secret_key not in line, f"DART 키 누설: {line}"
