@@ -82,8 +82,19 @@ def _spec(symbol: str = "AAPL", tier: str = "1", industry: str = "Technology") -
     return TickerSpec(symbol=symbol, tier=tier, industry=industry)
 
 
-def _result(spec: TickerSpec, market: str = "US", **df_kwargs) -> TickerResult:
-    return TickerResult(spec=spec, enriched_df=_make_enriched_df(**df_kwargs), market=market)
+def _result(
+    spec: TickerSpec,
+    market: str = "US",
+    company_name: str | None = None,
+    **df_kwargs,
+) -> TickerResult:
+    # company_name 미전달 시 None 기본 (TickerResult 기본값 — 무회귀).
+    return TickerResult(
+        spec=spec,
+        enriched_df=_make_enriched_df(**df_kwargs),
+        market=market,
+        company_name=company_name,
+    )
 
 
 def _open(path):
@@ -93,9 +104,10 @@ def _open(path):
 # ---------------- tests ----------------------------------------------------
 
 
-def test_column_count_is_21():
-    # 03-05: 기존 17열 + PER/PEG/GPM/OPM 4열 = 21열 (D-01, index 17~20).
-    assert len(PORTFOLIO_COLUMNS) == 21
+def test_column_count_is_22():
+    # 06-01: 기존 21열 + 기업명(index 1) = 22열 (COMPANY-01).
+    assert len(PORTFOLIO_COLUMNS) == 22
+    assert PORTFOLIO_COLUMNS[1] == "기업명"
     assert PORTFOLIO_COLUMNS[-4:] == ["PER", "PEG", "GPM", "OPM"]
 
 
@@ -110,6 +122,32 @@ def test_column_order(tmp_path):
         assert ws.cell(row=5, column=col_idx).value == name, (
             f"header col {col_idx} mismatch: expected {name}, got {ws.cell(5, col_idx).value}"
         )
+
+
+def test_company_name_column(tmp_path):
+    """06-01 (COMPANY-01/03): 시트1 B열(col2)에 영문 기업명, None 시 티커 폴백.
+    헤더 B5 == "기업명" (A 티커와 C 시장 사이).
+    """
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    results = [
+        _result(_spec("AAPL"), company_name="Apple Inc."),
+        _result(_spec("MSFT"), company_name=None),  # 결손 → 티커 폴백
+    ]
+    write_portfolio_sheet(
+        wb, formats, results, [], ["AAPL", "MSFT"], now=datetime(2026, 5, 26)
+    )
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    # B5 헤더 셀 == "기업명" (HIGH-2 헤더 좌표 단언).
+    assert ws.cell(row=5, column=2).value == "기업명"
+    # 기업명 존재 → B열 영문명.
+    assert ws.cell(row=6, column=2).value == "Apple Inc."
+    # 기업명 None → 티커 폴백.
+    assert ws.cell(row=7, column=2).value == "MSFT"
+    # 데이터행 B열 not-empty (HIGH-2 측정 단언).
+    assert ws.cell(row=6, column=2).value not in (None, "")
 
 
 def test_timestamp_row1(tmp_path):
@@ -149,9 +187,10 @@ def test_columns_ticker_market_close_change(tmp_path):
 
     ws = _open(path)["시트1"]
     assert ws.cell(row=6, column=1).value == "AAPL"
-    assert ws.cell(row=6, column=2).value == "US"
-    assert ws.cell(row=6, column=5).value == pytest.approx(100.0)
-    assert ws.cell(row=6, column=6).value == pytest.approx(0.005)
+    # +1 시프트: 시장 col 2→3, 최신 종가 5→6, 전일 등락률 6→7
+    assert ws.cell(row=6, column=3).value == "US"
+    assert ws.cell(row=6, column=6).value == pytest.approx(100.0)
+    assert ws.cell(row=6, column=7).value == pytest.approx(0.005)
 
 
 def test_ticker_hyperlink_us_and_kr(tmp_path):
@@ -183,7 +222,8 @@ def test_diff_ema_4cells_color_soft_red(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    g6 = ws.cell(row=6, column=7)
+    # +1 시프트: DIFF Close vs EMA11 col 7→8
+    g6 = ws.cell(row=6, column=8)
     # font.color may be ARGB "FFC62828" or theme — accept either RGB end-match
     color_val = g6.font.color.value if g6.font.color else ""
     assert isinstance(color_val, str)
@@ -220,7 +260,8 @@ def test_volume_color(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    k6 = ws.cell(row=6, column=11)
+    # +1 시프트: 거래량 col 11→12
+    k6 = ws.cell(row=6, column=12)
     color_val = k6.font.color.value if k6.font.color else ""
     # HARD_RED font is RED_900 = #B71C1C
     assert color_val.upper().endswith("B71C1C"), f"expected ...B71C1C (RED_900 HARD_RED), got {color_val!r}"
@@ -235,8 +276,9 @@ def test_stoch_rsi_color(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    l6 = ws.cell(row=6, column=12)
-    m6 = ws.cell(row=6, column=13)
+    # +1 시프트: (일)Stoch %K col 12→13, (일)RSI col 13→14
+    l6 = ws.cell(row=6, column=13)
+    m6 = ws.cell(row=6, column=14)
     l_color = l6.font.color.value if l6.font.color else ""
     m_color = m6.font.color.value if m6.font.color else ""
     assert l_color.upper().endswith("2E7D32"), f"%K=15 expected GREEN_800, got {l_color!r}"
@@ -252,8 +294,9 @@ def test_impulse_cells(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    n6 = ws.cell(row=6, column=16)
-    o6 = ws.cell(row=6, column=17)
+    # +1 시프트: (일)임펄스 col 16→17, (주)임펄스 col 17→18
+    n6 = ws.cell(row=6, column=17)
+    o6 = ws.cell(row=6, column=18)
     assert n6.value == "녹색"
     assert o6.value == "청색"
     n_color = n6.font.color.value if n6.font.color else ""
@@ -270,12 +313,15 @@ def test_tier_industry_columns(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    assert ws.cell(row=6, column=3).value == "1"
-    assert ws.cell(row=6, column=4).value == "Technology"
+    # +1 시프트: 티어 col 3→4, 산업 col 4→5
+    assert ws.cell(row=6, column=4).value == "1"
+    assert ws.cell(row=6, column=5).value == "Technology"
 
 
 def test_failed_row_in_sheet1(tmp_path):
-    """D-03: failed ticker → trailing row, A=ticker B='?' middle empty, last col 실패: <reason>."""
+    """D-03 / HIGH-1 단일 규칙: failed ticker → trailing row.
+    A=티커(col1), B=기업명 칸 빈칸(col2), C=시장 칸 "?"(col3), 마지막 임펄스 칸=실패 reason(col18).
+    """
     path = tmp_path / "out.xlsx"
     wb, formats = make_workbook(path)
     failures = [TickerFailure(spec=_spec("XYZ"), reason="부분 데이터: 100 거래일")]
@@ -285,15 +331,18 @@ def test_failed_row_in_sheet1(tmp_path):
     ws = _open(path)["시트1"]
     # No successes → first failure row is row 6.
     assert ws.cell(row=6, column=1).value == "XYZ"
-    assert ws.cell(row=6, column=2).value == "?"
+    # 기업명 칸(B, col2)은 빈칸 — 실패행은 기업명을 쓰지 않는다 (HIGH-1).
+    assert ws.cell(row=6, column=2).value in (None, "")
+    # "?"가 시장 칸(C, col3)으로 한 칸 시프트 (현행 col2 → col3).
+    assert ws.cell(row=6, column=3).value == "?"
     # Middle cells empty:
-    assert ws.cell(row=6, column=5).value in (None, "")
-    # Last column (17) = 실패: <reason>
-    last = ws.cell(row=6, column=17).value
+    assert ws.cell(row=6, column=6).value in (None, "")
+    # 마지막 임펄스 칸(col18 = _COL["(주)임펄스"] 0-base index17) = 실패: <reason>
+    last = ws.cell(row=6, column=18).value
     assert last is not None and last.startswith("실패: ")
     assert "부분 데이터" in last
     # Italic + bg fill present (failed_row_marker)
-    assert ws.cell(row=6, column=17).font.italic is True
+    assert ws.cell(row=6, column=18).font.italic is True
 
 
 def test_input_order_preserved_with_mixed_success_fail(tmp_path):
@@ -315,7 +364,8 @@ def test_input_order_preserved_with_mixed_success_fail(tmp_path):
     assert ws.cell(row=6, column=1).value == "AAPL"
     assert ws.cell(row=7, column=1).value == "MSFT"
     assert ws.cell(row=8, column=1).value == "BAD"
-    assert ws.cell(row=8, column=2).value == "?"
+    # HIGH-1 단일 규칙: "?"가 시장 칸(col3)으로 시프트.
+    assert ws.cell(row=8, column=3).value == "?"
 
 
 # ---------------- 03-05: 펀더멘털 4열 (PORT-05 / FUND-05 / D-05) ----------
