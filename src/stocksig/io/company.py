@@ -20,6 +20,7 @@ metadata 에서만 조회한다 (DART 미사용, 한국 종목도 영문명). OH
 from __future__ import annotations
 
 import logging
+import re
 
 import yfinance as yf
 from tenacity import (
@@ -38,9 +39,42 @@ from stocksig.io.throttle import throttled_yahoo  # 기존 2 RPS 재사용
 logger = logging.getLogger(__name__)
 
 
+# Morningstar PerformanceID 토큰 (예: "0P0001BL7Y") — 쓰레기 longName 식별자.
+_MORNINGSTAR_ID_RE = re.compile(r"^0P[A-Z0-9]{6,}$", re.IGNORECASE)
+
+
+def _is_junk_name(candidate: str | None, ticker: str) -> bool:
+    """yfinance 가 일부 종목에 반환하는 콤마-결합 식별자 쓰레기값을 판별.
+
+    관측 예: longName="263750.KS,0P0001BL7Y,135285" (티커 + Morningstar ID + 숫자).
+    truthy 라서 폴백을 통과해 시트1 B열에 사람이 읽을 수 없는 값이 표시되는 문제
+    (06-01 체크포인트 발견). 정상 기업명도 콤마를 포함할 수 있으므로
+    (예: "Samsung Electronics Co., Ltd.") 콤마 단독으로 거부하지 않고, 콤마-분리
+    토큰 중 **티커 자신** 또는 **Morningstar PerformanceID 패턴**이 있을 때만 거부.
+    """
+    if not candidate:
+        return True
+    tokens = [t.strip() for t in candidate.split(",")]
+    if len(tokens) < 2:
+        return False  # 콤마 없는 일반 문자열 — 쓰레기 패턴 아님.
+    ticker_upper = ticker.strip().upper()
+    for token in tokens:
+        if token.upper() == ticker_upper or _MORNINGSTAR_ID_RE.match(token):
+            return True
+    return False
+
+
 def _pick_name(info: dict, ticker: str) -> str:
-    """폴백 체인: longName → shortName → 티커 (longName 우선)."""
-    return info.get("longName") or info.get("shortName") or ticker
+    """폴백 체인: longName → shortName → 티커 (longName 우선).
+
+    각 후보는 `_is_junk_name` 가드를 통과해야 채택된다 — yfinance 가 반환하는
+    콤마-결합 식별자 쓰레기값(티커/Morningstar ID)은 거부하고 다음 후보로 넘어간다.
+    """
+    for key in ("longName", "shortName"):
+        candidate = info.get(key)
+        if candidate and not _is_junk_name(candidate, ticker):
+            return candidate
+    return ticker
 
 
 @throttled_yahoo

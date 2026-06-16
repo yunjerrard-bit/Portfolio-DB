@@ -81,6 +81,29 @@ def test_longname_preferred_over_garbage_shortname(mocker):
     )
 
 
+def test_junk_longname_falls_back_to_ticker(mocker):
+    """longName 자체가 콤마-결합 식별자 쓰레기값(티커+Morningstar ID)이면 거부 → 티커 폴백.
+
+    yfinance 가 일부 KR 종목에 longName="263750.KS,0P0001BL7Y,135285" 같은
+    쓰레기 문자열을 반환한다 (체크포인트 발견). truthy 라서 폴백을 통과해
+    시트1 B열에 사람이 읽을 수 없는 값이 표시되는 문제. shortName 도 결손이면
+    티커로 폴백해야 한다 (COMPANY-01 영문 기업명 보장).
+    """
+    _setup_mock_info(
+        mocker, {"longName": "263750.KS,0P0001BL7Y,135285", "shortName": None}
+    )
+    assert company_mod.fetch_company_name("263750.KS") == "263750.KS"
+
+
+def test_junk_longname_falls_back_to_clean_shortname(mocker):
+    """longName 쓰레기값 + shortName 정상 → shortName 채택 (가드가 long 만 거부)."""
+    _setup_mock_info(
+        mocker,
+        {"longName": "382900.KS,0P0001P9A2,42965", "shortName": "WCP Co., Ltd."},
+    )
+    assert company_mod.fetch_company_name("382900.KS") == "WCP Co., Ltd."
+
+
 # ---------------- 캐시 HIT/MISS (COMPANY-04) -------------------------------
 
 
