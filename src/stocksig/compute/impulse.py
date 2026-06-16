@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from stocksig.compute.color_rules import decide_impulse
+from stocksig.compute.color_rules import ImpulseBucket, decide_impulse
 from stocksig.compute.indicators import (
     ema_week_to_date,
     macd_oscillator_week_to_date,
@@ -58,7 +58,10 @@ def _weekly_impulse_series(df: pd.DataFrame) -> pd.Series:
     )
 
     # 완성 주 값을 주중 행에 forward fill (직전 완성 주 값 고정, D2 계단형).
-    return weekly_impulse.reindex(df.index, method="ffill")
+    # 첫 완성 주 이전(첫 금요일 전) 행은 ffill 소스가 없어 NaN → DEFAULT("")로
+    # 명시 처리한다 (decide_impulse 의 첫 주 NaN→DEFAULT 정책과 일관; 빈칸 누락 방지).
+    broadcast = weekly_impulse.reindex(df.index, method="ffill")
+    return broadcast.fillna(ImpulseBucket.DEFAULT.value)
 
 
 def add_impulse_columns(df: pd.DataFrame) -> pd.DataFrame:

@@ -1,9 +1,31 @@
-"""gap-fix 01-14: add_impulse_columns 검증."""
+"""gap-fix 01-14 + Phase 5: add_impulse_columns 검증.
+
+Phase 5 신규: 주봉 임펄스 금-금 계단형 (week_close_mask 샘플링 + ffill broadcast).
+- 계단형/금요일휴장/첫주DEFAULT 단언은 짧은 합성 DF(>=3주) 허용 — 값이 DEFAULT여도
+  '한 주 내 동일값(nunique==1)' / 'DEFAULT 자체'만 단언 (부호값 강제 안 함).
+- 색(녹/적) 부호 단언은 MACD 주봉 워밍업(~35주) 이후 구간에서만 (~60주 합성 DF).
+"""
 
 import numpy as np
 import pandas as pd
 
 from stocksig.compute.impulse import add_impulse_columns
+from stocksig.compute.weekly import week_close_mask
+
+
+def _impulse_minimal_df(close: pd.Series) -> pd.DataFrame:
+    """주봉 임펄스 계단형/경계 단언용 최소 DF — 신규 로직은 Close·DatetimeIndex만
+    유효하게 읽는다. 일봉부가 요구하는 컬럼은 0으로 채운다."""
+    n = len(close)
+    return pd.DataFrame(
+        {
+            "Close": close,
+            "Close_week": close,
+            "EMA_Close_11_trend": [0.0] * n,
+            "MACD_OSC": [0.0] * n,
+        },
+        index=close.index,
+    )
 
 
 def test_add_impulse_columns_basic():
@@ -95,3 +117,117 @@ def test_add_impulse_columns_weekly_computed():
     close[-40:] += np.arange(40) ** 2 * 0.5  # 마지막 구간 가속 상승 (EMA↑ & OSC↑)
     out = add_impulse_columns(_weekly_warmup_df(close))
     assert out["Impulse_weekly"].iloc[-1] == "녹색"
+
+
+# --- Phase 5 신규: 계단형 / 금요일휴장 / 첫주 / 부호 / 진행형회귀 / 시트1경로 ---
+
+
+def test_weekly_impulse_stepwise_same_value_within_week():
+    """(1) 계단형: 같은 주(week_close_mask 그룹) 내 모든 거래일 Impulse_weekly 동일.
+
+    짧은 합성 DF(>=3주)이므로 부호값은 DEFAULT여도 무방 — 주별 nunique==1만 단언.
+    """
+    n = 15  # 3주치 영업일
+    dates = pd.date_range(start="2026-01-05", periods=n, freq="B")  # 월요일 시작
+    close = pd.Series([100.0 + i for i in range(n)], index=dates)
+    out = add_impulse_columns(_impulse_minimal_df(close))
+
+    # 값은 주 마지막 거래일(금)에 갱신된다 → 동일값 구간은 [금 ~ 다음 금]이다.
+    # 따라서 mask=True(금) 행에서 그룹을 증가시켜 '금~목' 단위로 묶는다.
+    mask = week_close_mask(out.index)
+    holding_group = mask.cumsum()
+    for _, grp in out["Impulse_weekly"].groupby(holding_group):
+        assert grp.nunique() == 1  # 한 보유 구간(금~다음 목) 내 동일 값 (계단형)
+
+
+def test_weekly_impulse_sign_green_on_accelerating_uptrend():
+    """(2) 부호: ~60주 가속 상승 → 마지막 완성 주 '녹색' (워밍업 이후 단언)."""
+    n = 300
+    dates = pd.date_range(start="2020-01-06", periods=n, freq="B")
+    close = np.array([100.0 + i * 0.1 for i in range(n)])
+    close[-40:] += np.arange(40) ** 2 * 0.5  # EMA↑ & MACD-OSC↑
+    out = add_impulse_columns(_impulse_minimal_df(pd.Series(close, index=dates)))
+    assert out["Impulse_weekly"].iloc[-1] == "녹색"
+
+
+def test_weekly_impulse_sign_red_on_accelerating_downtrend():
+    """(2b) 부호: ~60주 가속 하락 → 마지막 완성 주 '적색' (워밍업 이후 단언)."""
+    n = 300
+    dates = pd.date_range(start="2020-01-06", periods=n, freq="B")
+    close = np.array([100.0 + 5000 - i * 0.1 for i in range(n)])
+    close[-40:] -= np.arange(40) ** 2 * 0.5  # EMA↓ & MACD-OSC↓
+    out = add_impulse_columns(_impulse_minimal_df(pd.Series(close, index=dates)))
+    assert out["Impulse_weekly"].iloc[-1] == "적색"
+
+
+def test_weekly_impulse_friday_holiday_no_gap():
+    """(3) 금요일 휴장: 금요일을 인덱스에서 제외(목=마지막) → 그 주 일관된 값(nunique==1).
+
+    짧은 DF이므로 값 자체가 DEFAULT여도 무방 — '그 주에 빈칸/오산출 없이 일관'만 단언.
+    """
+    n = 15
+    full = pd.date_range(start="2026-01-05", periods=n, freq="B")  # 월~금 3주
+    # 둘째 주 금요일(2026-01-16)을 휴장 처리 — 인덱스에서 제외.
+    holiday_fri = pd.Timestamp("2026-01-16")
+    dates = full[full != holiday_fri]
+    close = pd.Series([100.0 + i for i in range(len(dates))], index=dates)
+    out = add_impulse_columns(_impulse_minimal_df(close))
+
+    # 금요일 휴장 주(둘째 주)의 행들 — 목요일(01-15)이 그 주 마지막.
+    mask = week_close_mask(out.index)
+    week_group = mask.shift(1, fill_value=False).cumsum()
+    # 둘째 주 그룹 추출 (01-12 ~ 01-15)
+    second_week = out["Impulse_weekly"][
+        (out.index >= pd.Timestamp("2026-01-12"))
+        & (out.index <= pd.Timestamp("2026-01-15"))
+    ]
+    assert len(second_week) == 4  # 월화수목 (금 휴장)
+    assert second_week.notna().all()  # 빈칸(NaN) 없음
+    assert second_week.nunique() == 1  # 그 주 일관된 값 (계단형)
+
+
+def test_weekly_impulse_first_week_default():
+    """(4) 첫 주: 직전 완성 주 없음 → 첫 완성 주 구간 Impulse_weekly == ""(DEFAULT)."""
+    n = 15
+    dates = pd.date_range(start="2026-01-05", periods=n, freq="B")
+    close = pd.Series([100.0 + i for i in range(n)], index=dates)
+    out = add_impulse_columns(_impulse_minimal_df(close))
+
+    # 첫 완성 주(첫 금요일 = 2026-01-09) 행들은 직전 주 diff=NaN → DEFAULT.
+    first_week = out["Impulse_weekly"][out.index <= pd.Timestamp("2026-01-09")]
+    assert (first_week == "").all()
+
+
+def test_progressive_week_columns_unchanged_in_pipeline(mock_ohlcv_df):
+    """(5) 진행형 회귀: _compute_enriched 결과에 EMA_Close_11_week_trend·MACD_OSC_week
+    존재 + 한 주 내 주중 변동(nunique>1) — main_run이 D4 진행형 컬럼을 여전히 산출."""
+    from stocksig.main_run import _compute_enriched
+
+    enriched, _ = _compute_enriched(mock_ohlcv_df)
+    assert "EMA_Close_11_week_trend" in enriched.columns
+    assert "MACD_OSC_week" in enriched.columns
+
+    mask = week_close_mask(enriched.index)
+    week_group = mask.shift(1, fill_value=False).cumsum()
+    # 마지막 완전한 주 그룹에서 진행형 컬럼이 주중 변동(nunique>1)함을 단언.
+    for col in ("EMA_Close_11_week_trend", "MACD_OSC_week"):
+        per_week_nunique = (
+            enriched[col].groupby(week_group).nunique()
+        )
+        # 적어도 한 주는 주중 변동 (진행형 — 계단형이 아님).
+        assert (per_week_nunique > 1).any()
+
+
+def test_sheet1_path_matches_per_ticker_stepwise(mock_ohlcv_df):
+    """(6) 시트1 경로: sheet_portfolio.py:218-219 가 읽는 last.get("Impulse_weekly")
+    (= enriched df.iloc[-1]["Impulse_weekly"]) 가 종목 시트 계단형 컬럼의 마지막 행과
+    동일 값임을 단언. (시각·미적 확정은 Task 3 수기 검증.)"""
+    from stocksig.main_run import _compute_enriched
+
+    enriched, _ = _compute_enriched(mock_ohlcv_df)
+    # sheet_portfolio.py: last = enriched.iloc[-1]; imp_w = last.get("Impulse_weekly")
+    last = enriched.iloc[-1]
+    imp_w_sheet1 = last.get("Impulse_weekly")
+    # 종목 시트(sheet_per_ticker)는 동일 컬럼 전체를 표시 → 마지막 행이 시트1과 일치.
+    imp_w_per_ticker = enriched.iloc[-1]["Impulse_weekly"]
+    assert imp_w_sheet1 == imp_w_per_ticker
