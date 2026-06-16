@@ -147,7 +147,9 @@ def _compute_enriched(
 
     # 주봉 EMA 진행형 추세 (AK·AL열) — 일봉 AK/AO 추세 컬럼의 주봉 대응.
     # 금요일=진짜 주봉 EMA의 pct_change, 주중=오늘 종가가 α=2/(N+1)만큼 반영.
-    # 주봉 임펄스의 EMA 입력으로도 사용된다 (impulse.py 가 이 컬럼을 읽음).
+    # 이 컬럼은 주중 표시용 '진행형' 컬럼이다 (매일 변동). Phase 5 이후 주봉 임펄스
+    # (impulse.py)는 더 이상 이 컬럼을 읽지 않고, Close 에서 ema_week_to_date/
+    # macd_oscillator_week_to_date 를 주 마지막 거래일에 직접 샘플링한다 (금-금 계단형).
     df["EMA_Close_11_week_trend"] = ema_week_to_date(df["Close"], span=11).pct_change()
     df["EMA_Close_22_week_trend"] = ema_week_to_date(df["Close"], span=22).pct_change()
 
