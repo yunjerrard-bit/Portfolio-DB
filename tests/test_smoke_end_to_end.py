@@ -58,10 +58,26 @@ def _normalize_rgb(rgb_value) -> str | None:
 
 
 def _setup_mock_yfinance(mocker, df: pd.DataFrame) -> None:
-    """`yf.Ticker(...).history(...)`가 df를 반환하도록 patch."""
+    """`yf.Ticker(...).history(...)`가 df를 반환하도록 patch.
+
+    Pitfall 5 (06-01): Task 3로 run() 경로에 fetch_company_name 이 추가되면서
+    company.py 의 자체 `yf.Ticker` import 가 위 market 패치로 커버되지 않는다.
+    네트워크 격리를 위해 `stocksig.io.company.fetch_company_name` 을 결정론적
+    stub(티커=이름)으로 patch 한다.
+    """
     ticker_class = mocker.patch("stocksig.io.market.yf.Ticker")
     instance = ticker_class.return_value
     instance.history.return_value = df
+    # 기업명 fetch 결정론적 stub — 티커를 그대로 이름으로 반환 (네트워크 없음).
+    # main_run 은 `from stocksig.io.company import fetch_company_name` 로 이미 바인딩한
+    # 참조를 run_all 에 넘기므로, 실제 사용되는 main_run 바인딩을 patch 한다.
+    # (원본 정의도 함께 patch — stocksig.io.company 경유 호출 경로까지 격리.)
+    mocker.patch(
+        "stocksig.io.company.fetch_company_name", side_effect=lambda t: t
+    )
+    mocker.patch(
+        "stocksig.main_run.fetch_company_name", side_effect=lambda t: t
+    )
 
 
 def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file):
@@ -77,6 +93,14 @@ def test_single_ticker_workbook(mocker, mock_ohlcv_df, tmp_path, tmp_tickers_fil
 
     wb = openpyxl.load_workbook(output_path)
     assert "AAPL" in wb.sheetnames
+
+    # 06-01 HIGH-2: 시트1 기업명 B열 측정 가능 회귀 단언.
+    ws1 = wb["시트1"]
+    # B5 헤더 셀 == "기업명" (A 티커와 C 시장 사이).
+    assert ws1.cell(row=5, column=2).value == "기업명"
+    # 데이터행(row 6) B열이 비어있지 않음 — 기업명 또는 티커 폴백이 채워짐.
+    assert ws1.cell(row=6, column=2).value not in (None, "")
+
     ws = wb["AAPL"]
 
     # SHEET-02: A1 == ticker

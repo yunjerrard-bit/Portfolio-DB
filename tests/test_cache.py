@@ -143,6 +143,9 @@ def test_reset_then_get_stats_all_zero():
         "ohlcv_miss": 0,
         "fund_hit": 0,
         "fund_miss": 0,
+        # 06-01 (COMPANY-04): 기업명 캐시 통계 키 추가 — reset 후 0 초기화.
+        "name_hit": 0,
+        "name_miss": 0,
     }
 
 

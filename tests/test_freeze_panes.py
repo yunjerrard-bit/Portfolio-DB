@@ -64,25 +64,38 @@ def env_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def mock_pipeline_env(monkeypatch, tmp_path):
-    """fetch_ohlcv stub + cache dir 격리 (test_smoke_n_tickers 패턴 차용)."""
+    """fetch_ohlcv stub + 기업명 fetch stub + cache dir 격리 (test_smoke_n_tickers 패턴 차용).
+
+    06-01 (Pitfall 5): run() 경로에 추가된 fetch_company_name 이 실제 yfinance .info 를
+    치지 않도록 결정론적 stub(티커 반환)으로 격리하고, company 캐시 디렉토리도 tmp 격리한다.
+    freeze 단언 "B6" 는 기업명(B 비고정)이 추가돼도 불변이어야 한다.
+    """
     cache_dir = tmp_path / ".cache" / "ohlcv"
     monkeypatch.setattr(cache_mod, "_DEFAULT_DIR", cache_dir)
     monkeypatch.setattr(cache_mod, "_cache", None)
+    # company 캐시 격리 (운영 .cache/company 오염 방지)
+    monkeypatch.setattr(cache_mod, "_NAME_DIR", tmp_path / ".cache" / "company")
+    monkeypatch.setattr(cache_mod, "_name_cache", None)
 
     def _stub_fetch(ticker: str) -> pd.DataFrame:
         seed = abs(hash(ticker)) % 10_000
         return _make_ohlcv(rows=2700, seed=seed)
 
     monkeypatch.setattr(market_mod, "fetch_ohlcv", _stub_fetch)
+    # 기업명 fetch stub — 티커=이름 (네트워크 없음). main_run 의 바인딩을 patch.
+    import stocksig.main_run as main_run_mod
+
+    monkeypatch.setattr(main_run_mod, "fetch_company_name", lambda t: t)
     yield
     # Windows: 캐시 파일 핸들 close 로 tmp_path 정리 실패 방지 (test_cache.py:25-33 패턴)
-    c = getattr(cache_mod, "_cache", None)
-    if c is not None:
-        try:
-            c.close()
-        except Exception:
-            pass
-        monkeypatch.setattr(cache_mod, "_cache", None)
+    for attr in ("_cache", "_name_cache"):
+        c = getattr(cache_mod, attr, None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+            monkeypatch.setattr(cache_mod, attr, None)
 
 
 # --- tests -----------------------------------------------------------------
