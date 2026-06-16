@@ -3,10 +3,10 @@
 검증 대상 (이미 구현됨 — 04-02 must_haves):
   - 모든 시트의 행 1~5 가 frozen (행 6 이 첫 비고정 셀 → freeze_panes 가 "6" 으로 끝남)
   - 시트1: 행 1~5 + A열 고정 (freeze_panes == "B6")
-  - 종목 시트: 행 1~5 고정, 열 미고정 (freeze_panes == "A6")
+  - 종목 시트: 행 1~5 + A열(날짜) 고정 (freeze_panes == "B6")
 
 XlsxWriter `ws.freeze_panes(row, col)` 는 "첫 비고정 셀" 규약:
-  - sheet_per_ticker.py: freeze_panes(5, 0) → openpyxl 읽기 시 "A6"
+  - sheet_per_ticker.py: freeze_panes(5, 1) → openpyxl 읽기 시 "B6"
   - sheet_portfolio.py:  freeze_panes(5, 1) → openpyxl 읽기 시 "B6"
 
 후속 phase 가 frozen panes 를 깨뜨리면 이 회귀 테스트가 즉시 적색이 된다.
@@ -120,16 +120,16 @@ def test_portfolio_sheet_freezes_rows_and_col_a(
     )
 
 
-def test_per_ticker_sheet_freezes_rows_only(
+def test_per_ticker_sheet_freezes_rows_and_col_a(
     mock_pipeline_env, tmp_path, env_file
 ):
-    """종목 시트: 행 1~5 고정, 열 미고정 → freeze_panes == "A6"."""
+    """종목 시트: 행 1~5 + A열(날짜) 고정 → freeze_panes == "B6"."""
     tickers = tmp_path / "tickers.txt"
     tickers.write_text("AAPL\nMSFT\n", encoding="utf-8")
 
     out = run(tickers, env_file, tmp_path / "output")
 
     wb = openpyxl.load_workbook(out)
-    assert wb["AAPL"].freeze_panes == "A6", (
-        f"AAPL 시트 freeze_panes={wb['AAPL'].freeze_panes!r} (기대 'A6')"
+    assert wb["AAPL"].freeze_panes == "B6", (
+        f"AAPL 시트 freeze_panes={wb['AAPL'].freeze_panes!r} (기대 'B6')"
     )

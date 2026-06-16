@@ -44,7 +44,8 @@ def test_phase1_keys_intact(tmp_path):
 
 
 def test_add_format_count(tmp_path, monkeypatch):
-    """Instrumented count of add_format calls — Phase 2 02-03 grew cache 42 → 44.
+    """Instrumented count of add_format calls — Phase 2 02-03 grew cache 42 → 44;
+    표시 개선(날짜 Format) 으로 44 → 45.
 
     xlsxwriter.Workbook.__init__ itself invokes add_format twice for internal
     defaults (verified empirically). So user-driven calls = total − 2.
@@ -76,8 +77,8 @@ def test_add_format_count(tmp_path, monkeypatch):
         # Total observed minus the 2 from this wb's __init__:
         observed = user_calls["n"]
         user_only = observed - 2
-        assert user_only == 44, (
-            f"expected 44 user add_format calls, got {user_only} "
+        assert user_only == 45, (
+            f"expected 45 user add_format calls, got {user_only} "
             f"(observed={observed}, internal_probe_was={internal_during_init})"
         )
     finally:

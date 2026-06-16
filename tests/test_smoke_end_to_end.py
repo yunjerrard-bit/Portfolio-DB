@@ -331,9 +331,9 @@ def test_header_freeze_and_colored_bold(
     wb = openpyxl.load_workbook(output_path)
     ws = wb["AAPL"]
 
-    # (1) freeze_panes: openpyxl는 'A6' 문자열로 읽음 (row 6부터 스크롤)
-    assert ws.freeze_panes == "A6", (
-        f"freeze_panes 불일치: expected='A6', actual={ws.freeze_panes!r}"
+    # (1) freeze_panes: 행 1~5 + A열(날짜) 고정 → openpyxl는 'B6' 문자열로 읽음
+    assert ws.freeze_panes == "B6", (
+        f"freeze_panes 불일치: expected='B6', actual={ws.freeze_panes!r}"
     )
 
     # (2) 색 있는 Close 셀과 DEFAULT Close 셀을 찾아 bold 검증

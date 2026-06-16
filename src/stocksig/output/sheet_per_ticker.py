@@ -320,11 +320,12 @@ def write_sheet_for_ticker(
         for col_idx, col_name in enumerate(layout):
             if col_name == "Date":
                 try:
-                    ws.write_datetime(
-                        excel_row,
-                        col_idx,
-                        idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx,
-                    )
+                    dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
+                    # XlsxWriter는 tz-aware datetime을 거부 → tz 제거(표시 전용).
+                    # 이 가드가 없으면 str() 폴백으로 "...00:00:00-04:00"이 노출됨.
+                    if getattr(dt, "tzinfo", None) is not None:
+                        dt = dt.replace(tzinfo=None)
+                    ws.write_datetime(excel_row, col_idx, dt, formats["date"])
                 except Exception:
                     ws.write(excel_row, col_idx, str(idx))
                 continue
@@ -429,10 +430,13 @@ def write_sheet_for_ticker(
             ws.write(excel_row, col_idx, value, fmt)
 
     ws.set_column(0, len(layout) - 1, 12)
+    # A열(날짜): "yyyy-mm-dd (요일)" 표시 폭 확보.
+    ws.set_column(0, 0, 16)
 
     # 숨김: *_median, *_std, EMA_Close_{N} 값
     for col_idx, col_name in enumerate(layout):
         if col_name.endswith(("_median", "_std")) or _EMA_VALUE_RE.match(col_name):
             ws.set_column(col_idx, col_idx, None, None, {"hidden": True})
 
-    ws.freeze_panes(5, 0)
+    # 행 1~5 + A열(날짜) 고정 → openpyxl 읽기 시 "B6".
+    ws.freeze_panes(5, 1)

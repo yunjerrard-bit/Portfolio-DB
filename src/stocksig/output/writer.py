@@ -8,7 +8,8 @@ formats_dict 키:
 총 8 × 4 + 1 = 33 키 (Phase 1 01-06).
 gap-fix 01-14: + a1_title + header_bg×4 + impulse×4 = 42 키.
 Phase 2 02-03: + failed_row_marker + timestamp = 44 키.
-워크북당 add_format 호출 정확히 44회.
+표시 개선: + date (종목 시트 A열 날짜 "yyyy-mm-dd (요일)") = 45 키.
+워크북당 add_format 호출 정확히 45회.
 
 num_format 매핑 (gap-fix 01-07: percent를 두 종류로 분리):
   - "price"           → '#,##0.00'   (쉼표 + 소수점 2자리)
@@ -133,5 +134,9 @@ def make_workbook(path: Union[str, Path]) -> tuple[xlsxwriter.Workbook, dict]:
     )
     # Phase 2 02-03 (PORT-08): 시트1 A1 실행 시각
     formats["timestamp"] = wb.add_format({"italic": True, "font_size": 12})
+
+    # 표시 개선: 종목 시트 A열 날짜 — "yyyy-mm-dd (요일)".
+    # 요일(aaa)은 Excel 로케일 의존 — 한국어 Windows Excel에서 한글 요일(월/화…)로 표시.
+    formats["date"] = wb.add_format({"num_format": 'yyyy-mm-dd (aaa)'})
 
     return wb, formats
