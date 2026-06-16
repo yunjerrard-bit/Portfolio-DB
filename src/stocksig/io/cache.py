@@ -35,6 +35,9 @@ _stats: dict[str, int] = {
     "ohlcv_miss": 0,
     "fund_hit": 0,
     "fund_miss": 0,
+    # 06-01 (COMPANY-04): 기업명 캐시 hit/miss. reset_cache_stats 가 자동 초기화 (for k in _stats).
+    "name_hit": 0,
+    "name_miss": 0,
 }
 _stats_lock = threading.Lock()
 
@@ -134,3 +137,49 @@ def put_fund(source: str, ticker: str, quarter_label: str, value) -> None:
     """펀더멘털 캐시 저장. 만료 7일."""
     key = make_fund_key(source, ticker, quarter_label)
     _get_fund_cache().set(key, value, expire=_FUND_TTL_SECONDS)
+
+
+# --- 기업명 캐시 (30일 TTL, OHLCV/펀더멘털과 분리) -----------------------
+# 06-01 (COMPANY-04): 기업명은 안정적이므로 30일 TTL. 재실행 시 HIT → yfinance 무호출.
+
+_NAME_DIR = Path(".cache/company")
+_NAME_TTL_SECONDS = 30 * 24 * 60 * 60
+
+_name_cache: Optional[Cache] = None
+
+
+def _get_name_cache() -> Cache:
+    global _name_cache
+    if _name_cache is None:
+        _NAME_DIR.mkdir(parents=True, exist_ok=True)
+        _name_cache = Cache(str(_NAME_DIR))
+    return _name_cache
+
+
+def make_name_key(ticker: str) -> str:
+    """기업명 캐시 키: `"{TICKER}"` (날짜 무관 — 기업명 불변성)."""
+    return ticker
+
+
+def get_company_name(ticker: str):
+    """기업명 캐시 조회. 히트시 문자열 반환, 미스시 None.
+
+    HIT/MISS 로그는 한국어 + 영문 substring(`cache HIT`/`cache MISS`)을 동시 포함.
+    """
+    key = make_name_key(ticker)
+    value = _get_name_cache().get(key)
+    if value is not None:
+        logger.info("%s | 기업명 캐시 HIT (cache HIT, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["name_hit"] += 1
+    else:
+        logger.info("%s | 기업명 캐시 MISS (cache MISS, key=%s)", ticker, key)
+        with _stats_lock:
+            _stats["name_miss"] += 1
+    return value
+
+
+def put_company_name(ticker: str, name: str) -> None:
+    """기업명 캐시 저장. 만료 30일."""
+    key = make_name_key(ticker)
+    _get_name_cache().set(key, name, expire=_NAME_TTL_SECONDS)
