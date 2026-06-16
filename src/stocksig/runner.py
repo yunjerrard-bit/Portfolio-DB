@@ -44,6 +44,9 @@ class TickerResult:
     enriched_df: pd.DataFrame
     market: str  # "US" | "KR"
     fundamentals: "object | None" = None
+    # 06-01 (COMPANY-01/03): 시트1 B열 영문 기업명. 기본 None → 무회귀.
+    # 기업명 결손은 티커 실패가 아니다 (D-disc-10) — None 으로 남기고 시세 결과는 유지.
+    company_name: str | None = None
 
 
 @dataclass
@@ -71,6 +74,7 @@ def process_ticker(
     classify_market: Callable[[str], str],
     pipeline: Callable[[str], pd.DataFrame],
     fundamentals_fn: Callable[[str, str, float | None], object] | None = None,
+    company_name_fn: Callable[[str], str] | None = None,
 ) -> TickerResult:
     """단일 티커 처리 (스레드 worker 진입점).
 
@@ -102,8 +106,26 @@ def process_ticker(
             )
             fundamentals = None
 
+    # 06-01: 기업명 fetch (캐시 우선). 펀더멘털과 동일하게 try/except 로 흡수 —
+    # 기업명 결손 ≠ 티커 실패 (D-disc-10). fetch_company_name 자체도 내부에서
+    # 예외를 흡수하지만, 방어적으로 한 겹 더 격리한다.
+    company_name = None
+    if company_name_fn is not None:
+        try:
+            company_name = company_name_fn(spec.symbol)
+        except Exception as e:  # noqa: BLE001 — 결손 ≠ 실패
+            # T-06-02: 예외 원문 보간 금지 (타입명만).
+            logger.warning(
+                "%s | 기업명 fetch 예외 흡수: %s", spec.symbol, type(e).__name__
+            )
+            company_name = None
+
     return TickerResult(
-        spec=spec, enriched_df=df, market=market, fundamentals=fundamentals
+        spec=spec,
+        enriched_df=df,
+        market=market,
+        fundamentals=fundamentals,
+        company_name=company_name,
     )
 
 
@@ -112,6 +134,7 @@ def run_all(
     classify_market: Callable[[str], str],
     pipeline: Callable[[str], pd.DataFrame],
     fundamentals_fn: Callable[[str, str, float | None], object] | None = None,
+    company_name_fn: Callable[[str], str] | None = None,
 ) -> tuple[list[TickerResult], list[TickerFailure]]:
     """N 티커 fan-out 실행 + per-ticker 예외 격리.
 
@@ -134,7 +157,12 @@ def run_all(
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         future_to_spec = {
             executor.submit(
-                process_ticker, spec, classify_market, pipeline, fundamentals_fn
+                process_ticker,
+                spec,
+                classify_market,
+                pipeline,
+                fundamentals_fn,
+                company_name_fn=company_name_fn,
             ): spec
             for spec in specs
         }

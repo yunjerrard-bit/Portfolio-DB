@@ -44,6 +44,7 @@ from stocksig.compute.weekly import (
 from stocksig.config import load_env
 from stocksig.io import cache, naver_scraper
 from stocksig.io.auth_check import AuthStatus, ping_dart, ping_edgar
+from stocksig.io.company import fetch_company_name
 from stocksig.io.fundamentals import fetch_fundamentals
 from stocksig.io.input import read_tickers_extended
 from stocksig.io.market import fetch_ohlcv_cached
@@ -276,7 +277,11 @@ def run(
     # PASS 1 — fan-out (+ PASS 1b: 인증 배선된 펀더멘털 클로저 주입)
     pipeline = _make_pipeline()
     results, failures = run_all(
-        specs, classify_market, pipeline, fundamentals_fn=_fundamentals_with_auth
+        specs,
+        classify_market,
+        pipeline,
+        fundamentals_fn=_fundamentals_with_auth,
+        company_name_fn=fetch_company_name,  # 06-01: 시트1 B열 기업명 (캐시 우선)
     )
 
     # PASS 2 — write
@@ -330,11 +335,13 @@ def run(
         _auth_label(auth.dart_ok, auth.dart_note),
     )
     logger.info(
-        "캐시: OHLCV HIT %d/MISS %d · 펀더멘털 HIT %d/MISS %d",
+        "캐시: OHLCV HIT %d/MISS %d · 펀더멘털 HIT %d/MISS %d · 기업명 HIT %d/MISS %d",
         stats["ohlcv_hit"],
         stats["ohlcv_miss"],
         stats["fund_hit"],
         stats["fund_miss"],
+        stats["name_hit"],
+        stats["name_miss"],
     )
     if failures:
         logger.info(

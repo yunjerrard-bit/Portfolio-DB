@@ -30,9 +30,13 @@ from stocksig.runner import TickerFailure, TickerResult
 
 logger = logging.getLogger(__name__)
 
-# 21 컬럼 — 기존 17열(D-08) + 펀더멘털 4열(D-01, 03-05, index 17~20 / 시트 R/S/T/U).
+# 22 컬럼 — 기존 21열 + 기업명(index 1, 06-01 COMPANY-01) 삽입.
+# 기업명을 티커(0)와 시장(2) 사이에 넣어 컬럼이 한 칸씩 우측 시프트된다.
+# 하드코딩 정수 인덱스 대신 `_COL` 명명 인덱스를 단일 진실 출처로 사용해
+# 시프트 회귀를 구조적으로 차단한다 (RESEARCH Pattern 3 / Pitfall 1).
 PORTFOLIO_COLUMNS: list[str] = [
     "티커",
+    "기업명",  # index 1 (06-01) — A 티커와 C 시장 사이 영문 기업명
     "시장",
     "티어",
     "산업",
@@ -49,18 +53,21 @@ PORTFOLIO_COLUMNS: list[str] = [
     "(주)RSI",
     "(일)임펄스",
     "(주)임펄스",
-    "PER",  # col 17 (시트 R)
-    "PEG",  # col 18 (시트 S)
-    "GPM",  # col 19 (시트 T)
-    "OPM",  # col 20 (시트 U)
+    "PER",  # col 18 (시트 S)
+    "PEG",  # col 19 (시트 T)
+    "GPM",  # col 20 (시트 U)
+    "OPM",  # col 21 (시트 V)
 ]
 
-# 펀더멘털 4셀 컬럼 인덱스 + num_format 매핑 (신규 Format 0개 — 기존 캐시 재사용).
+# 헤더명 → 0-base 컬럼 인덱스 단일 진실 출처. 정수 하드코딩 전면 대체.
+_COL: dict[str, int] = {name: i for i, name in enumerate(PORTFOLIO_COLUMNS)}
+
+# 펀더멘털 4셀 컬럼 인덱스 — _COL 에서 도출 (17→18 등 자동 시프트).
 # PER/PEG = "price"(#,##0.00), GPM/OPM = "percent_ratio"(0.00%).
-_FUND_COL_PER = 17
-_FUND_COL_PEG = 18
-_FUND_COL_GPM = 19
-_FUND_COL_OPM = 20
+_FUND_COL_PER = _COL["PER"]
+_FUND_COL_PEG = _COL["PEG"]
+_FUND_COL_GPM = _COL["GPM"]
+_FUND_COL_OPM = _COL["OPM"]
 
 _SHEET_NAME = "시트1"
 _EMA_PERIODS = (11, 22, 96, 192)
@@ -132,37 +139,47 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
     last = res.enriched_df.iloc[-1]
     spec = res.spec
 
-    # col 0: 티커 (hyperlink)
+    # 티커 (hyperlink)
     ws.write_url(
         row,
-        0,
+        _COL["티커"],
         _internal_link(spec.symbol),
         cell_format=formats[(SigmaBucket.DEFAULT, "price")],
         string=spec.symbol,
     )
-    # col 1: 시장
-    ws.write_string(row, 1, res.market)
-    # col 2: 티어
-    ws.write_string(row, 2, spec.tier or "")
-    # col 3: 산업
-    ws.write_string(row, 3, spec.industry or "")
+    # 기업명 (06-01 COMPANY-01/03) — 영문 기업명, 결손/None 시 티커 폴백.
+    ws.write_string(
+        row,
+        _COL["기업명"],
+        res.company_name or spec.symbol,
+        formats[(SigmaBucket.DEFAULT, "price")],
+    )
+    # 시장
+    ws.write_string(row, _COL["시장"], res.market)
+    # 티어
+    ws.write_string(row, _COL["티어"], spec.tier or "")
+    # 산업
+    ws.write_string(row, _COL["산업"], spec.industry or "")
 
-    # col 4: 최신 종가
+    # 최신 종가
     close = last.get("Close")
     if not _nan(close):
         ws.write_number(
-            row, 4, float(close), formats[(SigmaBucket.DEFAULT, "price")]
+            row, _COL["최신 종가"], float(close), formats[(SigmaBucket.DEFAULT, "price")]
         )
 
-    # col 5: 전일 등락률 (Close_pct_change σ-bucket)
+    # 전일 등락률 (Close_pct_change σ-bucket)
     cpc = last.get("Close_pct_change")
     if not _nan(cpc):
         bucket = decide_sigma_bucket(
             cpc, last.get("Close_pct_change_median"), last.get("Close_pct_change_std")
         )
-        ws.write_number(row, 5, float(cpc), formats[(bucket, "percent_ratio")])
+        ws.write_number(
+            row, _COL["전일 등락률"], float(cpc), formats[(bucket, "percent_ratio")]
+        )
 
-    # cols 6..9: DIFF EMA{11,22,96,192} (D-02 = decide_sigma_bucket(DIFF, med, std))
+    # DIFF EMA{11,22,96,192} (D-02 = decide_sigma_bucket(DIFF, med, std)) — 연속 4열.
+    diff_base = _COL["DIFF Close vs EMA11"]
     for i, n in enumerate(_EMA_PERIODS):
         diff_val = last.get(f"DIFF_Close_{n}")
         diff_med = last.get(f"DIFF_Close_{n}_median")
@@ -171,10 +188,10 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
             continue
         bucket = decide_sigma_bucket(diff_val, diff_med, diff_std)
         ws.write_number(
-            row, 6 + i, float(diff_val), formats[(bucket, "percent_ratio")]
+            row, diff_base + i, float(diff_val), formats[(bucket, "percent_ratio")]
         )
 
-    # col 10: 거래량 (Volume) — 색은 Volume_pct_change σ-bucket (PORT-06)
+    # 거래량 (Volume) — 색은 Volume_pct_change σ-bucket (PORT-06)
     volume = last.get("Volume")
     if not _nan(volume):
         vpc = last.get("Volume_pct_change")
@@ -184,41 +201,49 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
             bucket = SigmaBucket.DEFAULT
         else:
             bucket = decide_sigma_bucket(vpc, vpc_med, vpc_std)
-        ws.write_number(row, 10, float(volume), formats[(bucket, "volume")])
+        ws.write_number(row, _COL["거래량"], float(volume), formats[(bucket, "volume")])
 
-    # col 11: (일)Stoch %K
+    # (일)Stoch %K
     stoch = last.get("Stoch_%K")
     if not _nan(stoch):
         bucket_t = decide_stoch_bucket(stoch)
-        ws.write_number(row, 11, float(stoch), formats[(bucket_t, "percent_literal")])
+        ws.write_number(
+            row, _COL["(일)Stoch %K"], float(stoch), formats[(bucket_t, "percent_literal")]
+        )
 
-    # col 12: (일)RSI
+    # (일)RSI
     rsi = last.get("RSI")
     if not _nan(rsi):
         bucket_t = decide_rsi_bucket(rsi)
-        ws.write_number(row, 12, float(rsi), formats[(bucket_t, "percent_literal")])
+        ws.write_number(
+            row, _COL["(일)RSI"], float(rsi), formats[(bucket_t, "percent_literal")]
+        )
 
-    # col 13: (주)Stoch %K
+    # (주)Stoch %K
     stoch_w = last.get("Stoch_%K_week")
     if not _nan(stoch_w):
         bucket_t = decide_stoch_bucket(stoch_w)
-        ws.write_number(row, 13, float(stoch_w), formats[(bucket_t, "percent_literal")])
+        ws.write_number(
+            row, _COL["(주)Stoch %K"], float(stoch_w), formats[(bucket_t, "percent_literal")]
+        )
 
-    # col 14: (주)RSI
+    # (주)RSI
     rsi_w = last.get("RSI_week")
     if not _nan(rsi_w):
         bucket_t = decide_rsi_bucket(rsi_w)
-        ws.write_number(row, 14, float(rsi_w), formats[(bucket_t, "percent_literal")])
+        ws.write_number(
+            row, _COL["(주)RSI"], float(rsi_w), formats[(bucket_t, "percent_literal")]
+        )
 
-    # col 15: (일)임펄스
+    # (일)임펄스
     imp_d = last.get("Impulse_daily")
     if not _nan(imp_d) and imp_d:
-        ws.write_string(row, 15, str(imp_d), _impulse_fmt(imp_d, formats))
+        ws.write_string(row, _COL["(일)임펄스"], str(imp_d), _impulse_fmt(imp_d, formats))
 
-    # col 16: (주)임펄스
+    # (주)임펄스
     imp_w = last.get("Impulse_weekly")
     if not _nan(imp_w) and imp_w:
-        ws.write_string(row, 16, str(imp_w), _impulse_fmt(imp_w, formats))
+        ws.write_string(row, _COL["(주)임펄스"], str(imp_w), _impulse_fmt(imp_w, formats))
 
     # cols 17~20: 펀더멘털 PER/PEG/GPM/OPM (03-05, D-01/D-02/D-05).
     fund = res.fundamentals
@@ -240,12 +265,20 @@ def _write_success_row(ws, row: int, res: TickerResult, formats: dict) -> None:
 
 
 def _write_failure_row(ws, row: int, fail: TickerFailure, formats: dict) -> None:
-    """D-03: 실패 티커 행 — italic + pastel red marker."""
+    """D-03 / HIGH-1 단일 규칙: 실패 티커 행 — 현행 동작을 한 칸 우측 시프트.
+
+    좌표(0-base):
+        _COL["티커"]      = 티커 (marker)
+        _COL["기업명"]    = 빈칸 (write 안 함 — 실패행은 기업명 미기록)
+        _COL["시장"]      = "?" (marker — 현행 index1 "?"가 한 칸 시프트)
+        _COL["(주)임펄스"] = "실패: {reason}" (marker — 현행 index16 reason 시프트)
+    """
     marker = formats["failed_row_marker"]
-    ws.write_string(row, 0, fail.spec.symbol, marker)
-    ws.write_string(row, 1, "?", marker)
-    # cols 2..15 비워둠.
-    ws.write_string(row, 16, f"실패: {fail.reason}", marker)
+    ws.write_string(row, _COL["티커"], fail.spec.symbol, marker)
+    # _COL["기업명"] 칸은 빈칸 유지 — 아무 것도 write 하지 않는다.
+    ws.write_string(row, _COL["시장"], "?", marker)
+    # 중간 칸은 비워둠.
+    ws.write_string(row, _COL["(주)임펄스"], f"실패: {fail.reason}", marker)
 
 
 # ---------------- main entry -----------------------------------------------

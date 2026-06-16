@@ -385,7 +385,7 @@ def _fund(per=None, peg=None, gpm=None, opm=None) -> FundamentalsResult:
 
 
 def test_fund_cols(tmp_path):
-    """PORT-05: col 18~21(PER/PEG/GPM/OPM) 값 + 출처 셀 주석, 포맷 무손상."""
+    """PORT-05: +1 시프트 col 19~22(PER/PEG/GPM/OPM) 값 + 출처 셀 주석, 포맷 무손상."""
     path = tmp_path / "out.xlsx"
     wb, formats = make_workbook(path)
     fund = _fund(
@@ -401,10 +401,11 @@ def test_fund_cols(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    per_c = ws.cell(row=6, column=18)
-    peg_c = ws.cell(row=6, column=19)
-    gpm_c = ws.cell(row=6, column=20)
-    opm_c = ws.cell(row=6, column=21)
+    # +1 시프트: PER 18→19, PEG 19→20, GPM 20→21, OPM 21→22
+    per_c = ws.cell(row=6, column=19)
+    peg_c = ws.cell(row=6, column=20)
+    gpm_c = ws.cell(row=6, column=21)
+    opm_c = ws.cell(row=6, column=22)
 
     assert per_c.value == pytest.approx(15.5)
     assert peg_c.value == pytest.approx(1.25)
@@ -442,8 +443,9 @@ def test_fund_missing_cell_blank_with_note(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    peg_c = ws.cell(row=6, column=19)
-    opm_c = ws.cell(row=6, column=21)
+    # +1 시프트: PEG 19→20, OPM 21→22
+    peg_c = ws.cell(row=6, column=20)
+    opm_c = ws.cell(row=6, column=22)
     # 값 없음 (0 금지)
     assert peg_c.value in (None, "")
     assert opm_c.value in (None, "")
@@ -463,7 +465,8 @@ def test_fund_none_backward_compat(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    for col in (18, 19, 20, 21):
+    # +1 시프트: 펀더멘털 4셀 col 18~21 → 19~22
+    for col in (19, 20, 21, 22):
         c = ws.cell(row=6, column=col)
         assert c.value in (None, "")
         assert c.comment is not None
@@ -471,7 +474,7 @@ def test_fund_none_backward_compat(tmp_path):
 
 
 def test_fund_failure_row_no_fund_cells(tmp_path):
-    """D-06: 실패 행은 펀더멘털 셀을 쓰지 않는다 (col 18~21 빈칸)."""
+    """D-06: 실패 행은 펀더멘털 셀을 쓰지 않는다 (+1 시프트 col 19~22 빈칸)."""
     path = tmp_path / "out.xlsx"
     wb, formats = make_workbook(path)
     failures = [TickerFailure(spec=_spec("XYZ"), reason="네트워크 오류")]
@@ -479,7 +482,8 @@ def test_fund_failure_row_no_fund_cells(tmp_path):
     wb.close()
 
     ws = _open(path)["시트1"]
-    for col in (18, 19, 20, 21):
+    # +1 시프트: 펀더멘털 4셀 col 18~21 → 19~22
+    for col in (19, 20, 21, 22):
         c = ws.cell(row=6, column=col)
         assert c.value in (None, "")
         assert c.comment is None
