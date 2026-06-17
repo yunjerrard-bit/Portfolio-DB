@@ -71,13 +71,17 @@ def test_ping_edgar_success(mocker):
     assert note is None
 
 
-def test_ping_edgar_403(mocker):
-    # 내부 호출이 403 → (False, "EDGAR 403 (UA 확인)"), raise 없음.
+def _edgar_status_error(status: int) -> httpx.HTTPStatusError:
     req = httpx.Request("GET", "https://www.sec.gov/")
-    resp = httpx.Response(403, request=req)
+    resp = httpx.Response(status, request=req)
+    return httpx.HTTPStatusError(str(status), request=req, response=resp)
+
+
+def test_ping_edgar_403(mocker):
+    # 내부 호출이 403(UA 거부) → (False, "EDGAR 403 (UA 확인)"), raise 없음.
     mocker.patch(
         "stocksig.io.auth_check.httpx.get",
-        side_effect=httpx.HTTPStatusError("403", request=req, response=resp),
+        side_effect=_edgar_status_error(403),
     )
 
     ok, note = ping_edgar()
@@ -85,24 +89,66 @@ def test_ping_edgar_403(mocker):
     assert "403" in (note or "")
 
 
-def test_ping_edgar_generic_exception(mocker):
-    # 일반 예외 → (False, 고정 한국어 사유), raise 없음.
+def test_ping_edgar_401_is_auth_fail(mocker):
+    # WR-02: 401 도 인증 실패로 한정 → (False, "EDGAR 인증 실패").
+    mocker.patch(
+        "stocksig.io.auth_check.httpx.get",
+        side_effect=_edgar_status_error(401),
+    )
+
+    ok, note = ping_edgar()
+    assert ok is False
+    assert "EDGAR 인증 실패" in (note or "")
+
+
+def test_ping_edgar_5xx_not_auth_fail(mocker):
+    # WR-02: 5xx(서버측 일시 장애)는 인증 문제 아님 → (True, None), 1차 소스 미차단.
+    mocker.patch(
+        "stocksig.io.auth_check.httpx.get",
+        side_effect=_edgar_status_error(503),
+    )
+
+    ok, note = ping_edgar()
+    assert ok is True
+    assert note is None
+
+
+def test_ping_edgar_transient_exception_not_auth_fail(mocker):
+    # WR-02: transient 일반 예외(연결 오류 등)는 인증 문제 아님 → (True, None).
+    req = httpx.Request("GET", "https://www.sec.gov/")
+    mocker.patch(
+        "stocksig.io.auth_check.httpx.get",
+        side_effect=httpx.ConnectError("연결 실패", request=req),
+    )
+
+    ok, note = ping_edgar()
+    assert ok is True
+    assert note is None
+
+
+def test_ping_edgar_runtime_error_not_auth_fail(mocker):
+    # WR-02: 일반 RuntimeError 도 transient 로 간주 → (True, None).
     mocker.patch(
         "stocksig.io.auth_check.httpx.get",
         side_effect=RuntimeError("연결 실패"),
     )
 
     ok, note = ping_edgar()
-    assert ok is False
-    assert note  # 사유 존재
-    assert "EDGAR 인증 실패" in note
+    assert ok is True
+    assert note is None
 
 
 def test_ping_edgar_note_never_leaks_ua_email(mocker):
-    # 보안(T-04-03): 예외에 UA/이메일을 주입해도 note 에 그 값이 포함되지 않음.
+    # 보안(T-04-03): 403 예외 메시지에 UA/이메일을 주입해도 note 에 그 값이 포함되지 않음.
+    req = httpx.Request("GET", "https://www.sec.gov/")
+    resp = httpx.Response(403, request=req)
     mocker.patch(
         "stocksig.io.auth_check.httpx.get",
-        side_effect=RuntimeError(f"403 Forbidden for User-Agent: {_SECRET_EMAIL}"),
+        side_effect=httpx.HTTPStatusError(
+            f"403 Forbidden for User-Agent: {_SECRET_EMAIL}",
+            request=req,
+            response=resp,
+        ),
     )
 
     ok, note = ping_edgar()
@@ -149,24 +195,21 @@ def test_ping_dart_invalid_key(mocker):
     assert "DART 인증 실패" in note
 
 
-def test_ping_dart_exception(mocker):
-    # 내부 예외 → (False, 고정 사유), raise 없음.
+def test_ping_dart_transient_exception_not_auth_fail(mocker):
+    # WR-02: transient 예외(네트워크 장애)는 인증 문제 아님 → (True, None), 1차 소스 미차단.
     mocker.patch(
         "stocksig.io.auth_check._dart_probe",
         side_effect=RuntimeError("연결 실패"),
     )
 
     ok, note = ping_dart()
-    assert ok is False
-    assert "DART 인증 실패" in (note or "")
+    assert ok is True
+    assert note is None
 
 
 def test_ping_dart_note_never_leaks_api_key(mocker):
-    # 보안(T-04-03): 예외에 OPENDART_API_KEY 를 주입해도 note 에 키가 포함되지 않음.
-    mocker.patch(
-        "stocksig.io.auth_check._dart_probe",
-        side_effect=RuntimeError(f"HTTP 401 for crtfc_key={_SECRET_DART_KEY}"),
-    )
+    # 보안(T-04-03): 무효 키 status 사유 note 에 OPENDART_API_KEY 가 포함되지 않음.
+    mocker.patch("stocksig.io.auth_check._dart_probe", return_value="010")
 
     ok, note = ping_dart()
     assert ok is False

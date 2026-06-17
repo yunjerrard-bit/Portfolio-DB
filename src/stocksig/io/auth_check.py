@@ -27,6 +27,11 @@ import logging
 from dataclasses import dataclass
 
 import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from stocksig.io import dart_client, edgar_client
 from stocksig.io.throttle import throttled_dart, throttled_edgar
@@ -59,11 +64,18 @@ class AuthStatus:
 
 
 @throttled_edgar
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
 def _edgar_probe() -> None:
-    """SEC 소형 엔드포인트 1회 GET (캐시 미경유) — 403/4xx 시 raise.
+    """SEC 소형 엔드포인트 1회 GET (캐시 미경유) — 4xx/5xx 시 raise.
 
     UA 는 edgar_client._resolve_identity() 재사용(.env 이메일 우선). 호출부
     ping_edgar 가 예외를 흡수하므로 여기서는 raise_for_status 로 검출만 한다.
+    WR-02: transient(5xx/네트워크) 일시 장애를 흡수하기 위해 tenacity 로 최대 3회
+    재시도(reraise=True — 소진 시 원 예외 그대로 전파, RetryError 미래핑).
     """
     headers = {"User-Agent": edgar_client._resolve_identity()}
     resp = httpx.get(_EDGAR_PING_URL, headers=headers, timeout=10)
@@ -73,22 +85,44 @@ def _edgar_probe() -> None:
 def ping_edgar() -> tuple[bool, str | None]:
     """EDGAR 인증 사전검증 — raise 금지, (ok, 키/UA 미포함 사유).
 
-    성공 → (True, None). 403(UA 거부) → (False, "EDGAR 403 (UA 확인)").
-    그 외 예외 → (False, "EDGAR 인증 실패"). 예외 원문 e 는 note 에 보간하지
-    않는다 (UA/이메일 누설 방지, T-04-03).
+    WR-02/WR-03 신 계약:
+      - 성공 → (True, None).
+      - HTTP 403(UA 거부) → (False, "EDGAR 403 (UA 확인)") — 구조적
+        e.response.status_code == 403 판별(문자열 매칭 폐지).
+      - HTTP 401 → (False, "EDGAR 인증 실패") — 인증 실패는 401/403 한정.
+      - 그 외 HTTP status(5xx 등) → (True, None) — 서버측 일시 장애는 인증
+        문제 아님, 1차 소스 차단 금지(self-DoS 방지, T-k34-02).
+      - 그 외 transient 예외(연결 오류 등) → (True, None) — per-call 흡수
+        경로에 맡긴다.
+    예외 원문 e 는 note 에 절대 보간하지 않는다(UA/이메일 누설 방지, T-04-03).
     """
     try:
         _edgar_probe()
-    except Exception as e:  # noqa: BLE001 — D-02 흡수 (fail-fast 아님)
-        # 고정 한국어 사유만 사용 — e 를 note 에 보간 금지(UA/이메일 누설 방지).
-        note = _EDGAR_403_NOTE if "403" in str(e) else _EDGAR_FAIL_NOTE
-        logger.warning("auth | ⚠ %s — 미국 펀더멘털 결손 처리됩니다", note)
-        return False, note
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status in (401, 403):
+            note = _EDGAR_403_NOTE if status == 403 else _EDGAR_FAIL_NOTE
+            logger.warning("auth | ⚠ %s — 미국 펀더멘털 결손 처리됩니다", note)
+            return False, note
+        # 5xx 등 서버측 일시 장애 — 인증 문제 아님, 1차 소스 차단 금지.
+        logger.warning(
+            "auth | EDGAR ping 일시 장애(HTTP %s) — 인증 문제 아님, 계속 진행", status
+        )
+        return True, None
+    except Exception:  # noqa: BLE001 — D-02 흡수 (fail-fast 아님)
+        # transient(네트워크/연결 오류) — 인증 문제 아님, per-call 경로에 맡김.
+        logger.warning("auth | EDGAR ping 일시 장애 — 인증 문제 아님, 계속 진행")
+        return True, None
     logger.info("auth | EDGAR 인증 OK")
     return True, None
 
 
 @throttled_dart
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
 def _dart_probe() -> str:
     """DART 가벼운 호출(캐시 미경유) → status 코드 문자열 반환.
 
@@ -109,17 +143,31 @@ def _dart_probe() -> str:
 def ping_dart() -> tuple[bool, str | None]:
     """DART 인증 사전검증 — raise 금지, (ok, 키 미포함 사유).
 
-    status "000"/"013"/"020" 은 키 유효 → (True, None) (Pitfall 4 false-negative
-    방지 — 데이터 미존재/쿼터 초과는 키 무효가 아님). 그 외 status·예외 →
-    (False, "DART 인증 실패"). opendartreader 가 키를 URL 에 넣으므로 예외 원문
-    e 는 note 에 보간하지 않는다 (T-04-03).
+    WR-02 신 계약:
+      - status "000"/"013"/"020" 은 키 유효 → (True, None) (Pitfall 4
+        false-negative 방지 — 데이터 미존재/쿼터 초과는 키 무효가 아님).
+      - 그 외 status(무효 키 "010" 등) → (False, "DART 인증 실패").
+      - HTTP 401/403 → (False, "DART 인증 실패") — 인증 실패는 401/403 한정.
+      - 그 외 HTTP status(5xx 등)·transient 예외 → (True, None) — 일시 장애는
+        인증 문제 아님, 1차 소스 차단 금지(self-DoS 방지, T-k34-02).
+    opendartreader 가 키를 URL 에 넣으므로 예외 원문 e 는 note 에 보간하지
+    않는다 (IN-02: except 절 미사용 e 바인딩 제거, T-04-03 누설 방지).
     """
     try:
         status = _dart_probe()
-    except Exception as e:  # noqa: BLE001 — D-02 흡수 (fail-fast 아님)
-        # 고정 한국어 사유만 사용 — e 를 note 에 보간 금지(API 키 누설 방지).
-        logger.warning("auth | ⚠ %s — 한국 펀더멘털 결손 처리됩니다", _DART_FAIL_NOTE)
-        return False, _DART_FAIL_NOTE
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (401, 403):
+            logger.warning(
+                "auth | ⚠ %s — 한국 펀더멘털 결손 처리됩니다", _DART_FAIL_NOTE
+            )
+            return False, _DART_FAIL_NOTE
+        # 5xx 등 서버측 일시 장애 — 인증 문제 아님, 1차 소스 차단 금지.
+        logger.warning("auth | DART ping 일시 장애 — 인증 문제 아님, 계속 진행")
+        return True, None
+    except Exception:  # noqa: BLE001 — D-02 흡수 (fail-fast 아님)
+        # transient(네트워크/연결 오류) — 인증 문제 아님, 계속 진행.
+        logger.warning("auth | DART ping 일시 장애 — 인증 문제 아님, 계속 진행")
+        return True, None
     if status in _DART_VALID_KEY_STATUS:
         logger.info("auth | DART 인증 OK")
         return True, None
