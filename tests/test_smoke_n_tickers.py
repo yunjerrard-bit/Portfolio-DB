@@ -87,6 +87,11 @@ def mock_pipeline_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_mod, "ping_edgar", lambda: (True, None))
     monkeypatch.setattr(main_mod, "ping_dart", lambda: (True, None))
+    # WR-06: 펀더멘털 fetch stub — run() 경유 모든 테스트가 실 EDGAR/DART/Naver/yf
+    # 를 치지 않도록 None 반환(네트워크 0). 개별 테스트가 monkeypatch 로 재설정 가능.
+    monkeypatch.setattr(
+        main_mod, "fetch_fundamentals", lambda ticker, market, last_close, **kw: None
+    )
     yield call_counter
 
 
@@ -393,8 +398,10 @@ def test_ping_failure_propagates_skip_edgar(
     captured = {"calls": []}
 
     def _spy_fund(ticker, market, last_close, **kwargs):
+        # WR-06 보정: skip_edgar 전파(인자)만 검증하면 충분 — 원본 real fetch 로
+        # 위임하지 않고 None 반환(네트워크 0, fixture stub 무관 무한재귀/의도훼손 방지).
         captured["calls"].append((ticker, market, kwargs.get("skip_edgar"), kwargs.get("skip_dart")))
-        return main_mod.fetch_fundamentals(ticker, market, last_close, **kwargs)
+        return None
 
     monkeypatch.setattr(main_mod, "fetch_fundamentals", _spy_fund)
 

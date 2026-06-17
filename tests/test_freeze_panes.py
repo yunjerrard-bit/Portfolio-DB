@@ -86,6 +86,13 @@ def mock_pipeline_env(monkeypatch, tmp_path):
     import stocksig.main_run as main_run_mod
 
     monkeypatch.setattr(main_run_mod, "fetch_company_name", lambda t: t)
+    # WR-05: 인증 ping + 펀더멘털 fetch stub — freeze 검증에 외부 호출 0회 보장.
+    # (frozen panes 검증에 펀더멘털 불필요 → fetch_fundamentals 는 None 반환.)
+    monkeypatch.setattr(main_run_mod, "ping_edgar", lambda: (True, None))
+    monkeypatch.setattr(main_run_mod, "ping_dart", lambda: (True, None))
+    monkeypatch.setattr(
+        main_run_mod, "fetch_fundamentals", lambda t, m, lc, **kw: None
+    )
     yield
     # Windows: 캐시 파일 핸들 close 로 tmp_path 정리 실패 방지 (test_cache.py:25-33 패턴)
     for attr in ("_cache", "_name_cache"):
