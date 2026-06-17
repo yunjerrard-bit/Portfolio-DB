@@ -510,3 +510,62 @@ def test_fetch_fundamentals_us_exception_no_secret_leak(caplog):
     for f in dataclasses.fields(res):
         cell = getattr(res, f.name)
         assert marker not in (cell.note or "")
+
+
+# --- WR-01: NaN 결손 가드 (NaN 을 None 과 동일하게 결손 처리) ------------------
+# runner.process_ticker 가 주입하는 last_close = df.iloc[-1].get("Close") 가 장중
+# 부분 행 등으로 NaN 일 수 있다. NaN 은 비교(<=0 등)가 모두 False 라 기존 `is None`
+# 가드를 통과해 값 있는 셀·provenance 로 새므로(D-05 위반), _is_missing 단일 게이트로
+# 차단해야 한다. 외부 의존 없이 float("nan") 직접 사용.
+
+def test_compute_per_last_close_nan():
+    cell = _compute_per(last_close=float("nan"), eps_ttm=8.0)
+    assert cell.value is None
+    assert "종가" in (cell.note or "")
+
+
+def test_compute_per_eps_nan():
+    # NaN EPS 가 ≤0 비교(False)로 새지 않고 결손으로 차단.
+    cell = _compute_per(last_close=100.0, eps_ttm=float("nan"))
+    assert cell.value is None
+
+
+def test_compute_peg_per_nan():
+    # NaN PER 이 _compute_peg 로 전파돼 값 있는 셀이 되지 않는다.
+    cell = _compute_peg(per=float("nan"), eps_ttm=10.0, eps_prior=8.0)
+    assert cell.value is None
+
+
+def test_compute_peg_eps_nan():
+    cell = _compute_peg(per=12.5, eps_ttm=float("nan"), eps_prior=8.0)
+    assert cell.value is None
+
+
+def test_compute_margin_nan():
+    cell = _compute_margin(numer=float("nan"), denom=100.0)
+    assert cell.value is None
+    cell2 = _compute_margin(numer=40.0, denom=float("nan"))
+    assert cell2.value is None
+
+
+def test_fetch_fundamentals_us_nan_last_close():
+    # NaN last_close → PER 결손(value None) AND provenance 미부여(source None).
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=float("nan"),
+        edgar_fn=lambda t: _edgar_full(),  # eps_ttm 양수 반환
+        yf_fn=lambda t: {},
+    )
+    assert res.per.value is None
+    assert res.per.source is None
+
+
+def test_fill_us_yf_nan_rejected():
+    # EDGAR PER 결손(eps None) + yf 가 NaN PER 반환 → 결손 유지, "yf" 미부여.
+    edgar_no_eps = dict(_edgar_full(), eps_ttm=None)
+    res = fetch_fundamentals(
+        "AAPL", "US", last_close=200.0,
+        edgar_fn=lambda t: edgar_no_eps,
+        yf_fn=lambda t: {"PER": float("nan")},
+    )
+    assert res.per.value is None
+    assert res.per.source is None
