@@ -20,6 +20,7 @@ PEG 산식(RESEARCH Pattern 3 확정식 + 엣지케이스 4종):
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -68,13 +69,22 @@ def _empty_result(note: str | None = None) -> FundamentalsResult:
 
 # --- 순수 산식 헬퍼 ------------------------------------------------------
 
+def _is_missing(x: float | None) -> bool:
+    """결손 게이트 — None 또는 NaN 을 동일하게 "결손"으로 판정 (WR-01).
+
+    NaN 은 모든 비교(<=0 등)가 False 라 `is None` 가드를 통과해 값 있는 셀·
+    provenance 로 새므로(D-05 위반), 산식·폴백 진입 전 단일 게이트로 차단한다.
+    """
+    return x is None or (isinstance(x, float) and math.isnan(x))
+
+
 def _compute_per(last_close: float | None, eps_ttm: float | None) -> MetricCell:
-    """PER = last_close / eps_ttm. eps_ttm None → 미존재, ≤0 → EPS ≤ 0."""
-    if eps_ttm is None:
+    """PER = last_close / eps_ttm. eps_ttm None/NaN → 미존재, ≤0 → EPS ≤ 0."""
+    if _is_missing(eps_ttm):
         return _empty_cell("조회 실패: EPS TTM 미존재")
     if eps_ttm <= 0:
         return _empty_cell("조회 실패: EPS ≤ 0")
-    if last_close is None:
+    if _is_missing(last_close):
         return _empty_cell("조회 실패: 종가 미존재")
     return MetricCell(value=last_close / eps_ttm, source=None, note=None)
 
@@ -85,13 +95,13 @@ def _compute_peg(
     eps_prior: float | None,
 ) -> MetricCell:
     """PEG = PER / ((eps_ttm/eps_prior − 1)×100). 엣지케이스 4종 빈값+한국어 사유."""
-    if per is None:
+    if _is_missing(per):
         return _empty_cell("조회 실패: PER 없음")
-    if eps_prior is None:
+    if _is_missing(eps_prior):
         return _empty_cell("조회 실패: 전년 EPS 미존재")
     if eps_prior == 0:
         return _empty_cell("조회 실패: 전년 EPS 0")
-    if eps_ttm is None:
+    if _is_missing(eps_ttm):
         return _empty_cell("조회 실패: EPS TTM 미존재")
     growth_pct = (eps_ttm / eps_prior - 1) * 100
     if growth_pct <= 0:
@@ -101,9 +111,9 @@ def _compute_peg(
 
 def _compute_margin(numer: float | None, denom: float | None) -> MetricCell:
     """마진 = numer / denom (0~1 비율). 분모 0/None 또는 분자 None → 빈값+사유."""
-    if numer is None:
+    if _is_missing(numer):
         return _empty_cell("조회 실패: 분자 미존재")
-    if denom is None or denom == 0:
+    if _is_missing(denom) or denom == 0:
         return _empty_cell("조회 실패: 매출(분모) 미존재")
     return MetricCell(value=numer / denom, source=None, note=None)
 
@@ -159,7 +169,7 @@ def _fill_us(
         for cell, key in ((per, "PER"), (peg, "PEG"), (gpm, "GPM"), (opm, "OPM")):
             if cell.value is None:
                 v = yf_info.get(key)
-                if v is not None:
+                if v is not None and not _is_missing(float(v)):
                     cell.value = float(v)
                     cell.source = "yf"
                     cell.note = "yf"
@@ -235,7 +245,7 @@ def _fill_kr(
         except Exception as e:  # Naver 폴백 예외 흡수 (결손 사유 유지)
             logger.info("%s | Naver 폴백 예외 흡수: %s", ticker, e)
             naver_per = None
-        if naver_per is not None:
+        if naver_per is not None and not _is_missing(float(naver_per)):
             per.value = float(naver_per)
             per.source = "Naver"
             per.note = "Naver"
@@ -253,7 +263,7 @@ def _fill_kr(
         for cell, key in ((per, "PER"), (peg, "PEG"), (gpm, "GPM"), (opm, "OPM")):
             if cell.value is None:
                 v = yf_info.get(key)
-                if v is not None:
+                if v is not None and not _is_missing(float(v)):
                     cell.value = float(v)
                     cell.source = "yf"
                     cell.note = "yf"
