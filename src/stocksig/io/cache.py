@@ -41,6 +41,13 @@ _stats: dict[str, int] = {
 }
 _stats_lock = threading.Lock()
 
+# --- 싱글톤 초기화 전용 lock (WR-04) ------------------------------------
+# _get_cache/_get_fund_cache/_get_name_cache 의 lazy 초기화를 double-checked
+# locking 으로 보호 — 동시 첫 호출에서도 단일 Cache 인스턴스만 생성해
+# 중복 diskcache 핸들(Windows 파일 핸들) 누수를 차단한다. _stats 카운터
+# lock(_stats_lock)과는 분리한다(서로 다른 임계영역).
+_cache_lock = threading.Lock()
+
 
 def reset_cache_stats() -> None:
     """run 시작 시 캐시 hit/miss 카운터 초기화 (EXEC-04)."""
@@ -57,9 +64,11 @@ def get_cache_stats() -> dict[str, int]:
 
 def _get_cache() -> Cache:
     global _cache
-    if _cache is None:
-        _DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
-        _cache = Cache(str(_DEFAULT_DIR))
+    if _cache is None:  # fast-path (lock 없음 — 이미 초기화된 hot path 비용 0)
+        with _cache_lock:
+            if _cache is None:  # double-checked (lock 내 재확인)
+                _DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
+                _cache = Cache(str(_DEFAULT_DIR))
     return _cache
 
 
@@ -104,9 +113,11 @@ _fund_cache: Optional[Cache] = None
 
 def _get_fund_cache() -> Cache:
     global _fund_cache
-    if _fund_cache is None:
-        _FUND_DIR.mkdir(parents=True, exist_ok=True)
-        _fund_cache = Cache(str(_FUND_DIR))
+    if _fund_cache is None:  # fast-path (lock 없음)
+        with _cache_lock:
+            if _fund_cache is None:  # double-checked
+                _FUND_DIR.mkdir(parents=True, exist_ok=True)
+                _fund_cache = Cache(str(_FUND_DIR))
     return _fund_cache
 
 
@@ -150,9 +161,11 @@ _name_cache: Optional[Cache] = None
 
 def _get_name_cache() -> Cache:
     global _name_cache
-    if _name_cache is None:
-        _NAME_DIR.mkdir(parents=True, exist_ok=True)
-        _name_cache = Cache(str(_NAME_DIR))
+    if _name_cache is None:  # fast-path (lock 없음)
+        with _cache_lock:
+            if _name_cache is None:  # double-checked
+                _NAME_DIR.mkdir(parents=True, exist_ok=True)
+                _name_cache = Cache(str(_NAME_DIR))
     return _name_cache
 
 
