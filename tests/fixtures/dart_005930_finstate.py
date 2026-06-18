@@ -80,6 +80,23 @@ IS_CIS_ROWS: list[list[str]] = [
          "45206805000000", "34451351000000"),
 ]
 
+# --- Plan 07-02: 분기 백필용 BS(재무상태표)·CF(현금흐름표) 행 (additive) ---
+# sj_div='BS' 저량(instant): 자본총계·부채총계·자산총계.
+# sj_div='CF' 유량(duration): 영업활동현금흐름.  [Open Q2 — 005930 BS/CF account_id 후보]
+BS_CF_ROWS: list[list[str]] = [
+    _row("BS", "재무상태표", "ifrs-full_Equity", "자본총계",
+         "402192070000000", "363677865000000"),
+    _row("BS", "재무상태표", "ifrs-full_Liabilities", "부채총계",
+         "112340000000000", "92228115000000"),
+    _row("BS", "재무상태표", "ifrs-full_Assets", "자산총계",
+         "514532070000000", "455905980000000"),
+    _row("CF", "현금흐름표", "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+         "영업활동현금흐름", "75582488000000", "44137000000000"),
+]
+
+# IS/CIS + BS/CF 통합 행 (분기 추출기 fixture).
+ALL_ROWS: list[list[str]] = IS_CIS_ROWS + BS_CF_ROWS
+
 # 논리 지표 → 기대 정수값 (Wave 3 단위테스트 assert 용, thstrm 파싱 후)
 EXPECTED_VALUES: dict[str, int] = {
     "revenue": 333_605_938_000_000,
@@ -87,6 +104,10 @@ EXPECTED_VALUES: dict[str, int] = {
     "op_income": 43_601_051_000_000,
     "net_income": 45_206_805_000_000,
     "eps": 6_605,  # 원
+    "total_equity": 402_192_070_000_000,
+    "total_liabilities": 112_340_000_000_000,
+    "total_assets": 514_532_070_000_000,
+    "operating_cash_flow": 75_582_488_000_000,
 }
 
 # 빈 결과(쿼터초과/데이터없음) 시나리오: finstate_all 이 빈 df 또는 None 반환
