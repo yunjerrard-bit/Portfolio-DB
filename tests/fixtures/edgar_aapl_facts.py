@@ -93,3 +93,108 @@ def quarter_label_from_periods(periods: list[tuple[int, str]]) -> str:
 
 # GOOGL GrossProfit 결손 케이스(A2) — GPM yf 폴백 트리거 검증용
 GOOGL_GROSS_PROFIT_MISSING: float | None = None  # get_gross_profit() -> None [VERIFIED]
+
+
+# --- Plan 07-02: per-quarter raw 추출 mock 표면 (additive) ---
+
+
+@dataclass
+class FakeFinancialFact:
+    """edgartools FinancialFact 의 mock — facts.query()...execute() 가 반환하는 행.
+
+    실 FinancialFact 공개 attr 중 추출기가 쓰는 것만: numeric_value(None-safe),
+    period_start/period_end, period_type, accession, unit, get_display_period_key().
+    """
+
+    numeric_value: float | None
+    accession: str
+    unit: str | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+    period_type: str = "duration"
+    _display_key: str = "Q2 2026"  # "Q{n} {year}" — get_display_period_key() 반환형(D-08)
+
+    def get_display_period_key(self) -> str:
+        return self._display_key
+
+
+class FakeQuery:
+    """facts.query() 체인 mock — by_concept/by_period_type/by_period_length/execute."""
+
+    def __init__(self, store: dict):
+        self._store = store
+        self._concept: str | None = None
+        self._period_type: str | None = None
+
+    def by_concept(self, concept: str) -> FakeQuery:
+        self._concept = concept
+        return self
+
+    def by_period_type(self, period_type: str) -> FakeQuery:
+        self._period_type = period_type
+        return self
+
+    def by_period_length(self, n: int) -> FakeQuery:
+        return self  # 분기=3, mock 은 길이 필터 무시(이미 분기 행만 보유)
+
+    def execute(self) -> list:
+        return list(self._store.get((self._concept, self._period_type), []))
+
+
+class FakeQuarterlyFacts:
+    """EntityFacts mock — query 빌더 + shares_outstanding_fact 표면 제공.
+
+    quarterly_store: {(concept, period_type): [FakeFinancialFact, ...]}.
+    """
+
+    def __init__(self, quarterly_store: dict, shares_fact=None):
+        self._store = quarterly_store
+        self.shares_outstanding_fact = shares_fact
+
+    def query(self) -> FakeQuery:
+        return FakeQuery(self._store)
+
+
+# AAPL 2개 분기(2026Q1·2026Q2) 손익(duration)·BS(instant)·CF(duration) mock 행.
+AAPL_QUARTERLY_STORE: dict = {
+    ("Revenue", "duration"): [
+        FakeFinancialFact(95_359_000_000.0, "0000320193-26-000050", "USD",
+                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+        FakeFinancialFact(124_300_000_000.0, "0000320193-26-000010", "USD",
+                          "2025-09-28", "2025-12-31", "duration", "Q1 2026"),
+    ],
+    ("NetIncomeLoss", "duration"): [
+        FakeFinancialFact(23_636_000_000.0, "0000320193-26-000050", "USD",
+                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+    ],
+    ("EarningsPerShareDiluted", "duration"): [
+        FakeFinancialFact(1.57, "0000320193-26-000050", "USD/shares",
+                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+    ],
+    ("GrossProfit", "duration"): [
+        # 결손 케이스: numeric_value=None → value=None 단언용 (D-05).
+        FakeFinancialFact(None, "0000320193-26-000050", "USD",
+                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+    ],
+    ("NetCashProvidedByUsedInOperatingActivities", "duration"): [
+        FakeFinancialFact(29_935_000_000.0, "0000320193-26-000050", "USD",
+                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+    ],
+    ("StockholdersEquity", "instant"): [
+        FakeFinancialFact(66_708_000_000.0, "0000320193-26-000050", "USD",
+                          None, "2026-03-28", "instant", "Q2 2026"),
+    ],
+    ("Liabilities", "instant"): [
+        FakeFinancialFact(277_327_000_000.0, "0000320193-26-000050", "USD",
+                          None, "2026-03-28", "instant", "Q2 2026"),
+    ],
+    ("Assets", "instant"): [
+        FakeFinancialFact(344_085_000_000.0, "0000320193-26-000050", "USD",
+                          None, "2026-03-28", "instant", "Q2 2026"),
+    ],
+}
+
+AAPL_SHARES_FACT = FakeFinancialFact(
+    14_840_000_000.0, "0000320193-26-000050", "shares",
+    None, "2026-03-28", "instant", "Q2 2026",
+)

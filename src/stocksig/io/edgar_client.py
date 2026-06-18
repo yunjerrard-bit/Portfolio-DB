@@ -93,6 +93,166 @@ def fetch_edgar_raw(ticker: str) -> dict:
     }
 
 
+# --- Plan 07-02: per-quarter raw 추출 (additive, 시트1 TTM 경로 불변 D-06) ---
+
+# 유량(duration, by_period_length(3)): 손익 5종 + 영업현금흐름.
+# (concept, 논리 field). EPS는 per-share 라 period_length 무관하지만 duration 으로 취득.
+_EDGAR_DURATION_CONCEPTS: tuple[tuple[str, str], ...] = (
+    ("Revenue", "revenue"),
+    ("GrossProfit", "gross_profit"),
+    ("OperatingIncomeLoss", "op_income"),
+    ("NetIncomeLoss", "net_income"),
+    ("EarningsPerShareDiluted", "eps"),
+    ("NetCashProvidedByUsedInOperatingActivities", "operating_cash_flow"),
+)
+
+# 저량(instant): BS 항목 (D-04 신규 경로).
+_EDGAR_INSTANT_CONCEPTS: tuple[tuple[str, str], ...] = (
+    ("StockholdersEquity", "total_equity"),
+    ("Liabilities", "total_liabilities"),
+    ("Assets", "total_assets"),
+)
+
+
+def _calendar_quarter_key(fact) -> str | None:
+    """FinancialFact.get_display_period_key() ("Q2 2026") → "2026Q2" (D-08 캘린더 분기).
+
+    period 종료일 기준 캘린더 분기로 정규화된 키 사용 — fiscal≠calendar 기업도 일관 정렬.
+    실패 시 None (호출부에서 skip).
+    """
+    key_fn = getattr(fact, "get_display_period_key", None)
+    if not callable(key_fn):
+        return None
+    try:
+        disp = key_fn()
+    except Exception:  # noqa: BLE001 — 외부 객체, 키 산출 실패는 skip
+        return None
+    if not disp:
+        return None
+    disp = str(disp).strip()
+    # "Q2 2026" → "2026Q2" / 이미 "2026Q2" 형식이면 그대로.
+    parts = disp.split()
+    if len(parts) == 2 and parts[0].startswith("Q") and parts[1].isdigit():
+        return f"{parts[1]}{parts[0]}"
+    if len(parts) == 2 and parts[1].startswith("Q") and parts[0].isdigit():
+        return f"{parts[0]}{parts[1]}"
+    return disp  # 알 수 없는 형식 — as-reported 보존
+
+
+def _iso_or_none(value) -> str | None:
+    """date/datetime/str → ISO 문자열, None-safe."""
+    if value is None:
+        return None
+    iso_fn = getattr(value, "isoformat", None)
+    if callable(iso_fn):
+        return iso_fn()
+    return str(value)
+
+
+def _fact_to_row(ticker: str, field: str, fact, period_type: str) -> dict | None:
+    """FinancialFact → raw 행 dict (D-08 quarter·accession·결손 None-safe).
+
+    quarter 산출 실패 시 None 반환(호출부 skip).
+    """
+    quarter = _calendar_quarter_key(fact)
+    if quarter is None:
+        return None
+    return {
+        "ticker": ticker,
+        "source": "EDGAR",
+        "quarter": quarter,
+        "field": field,
+        "value": getattr(fact, "numeric_value", None),  # None-safe (D-05)
+        "unit": getattr(fact, "unit", None),
+        "accession": getattr(fact, "accession", None),
+        "period_start": _iso_or_none(getattr(fact, "period_start", None)),
+        "period_end": _iso_or_none(getattr(fact, "period_end", None)),
+        "period_type": period_type,
+        "reprt_code": None,
+    }
+
+
+def _query_facts(facts, concept: str, period_type: str, period_length: int | None):
+    """facts.query() 빌더 실행 → list[FinancialFact]. 실패/빈 결과 시 빈 리스트."""
+    try:
+        q = facts.query().by_concept(concept).by_period_type(period_type)
+        if period_length is not None:
+            q = q.by_period_length(period_length)
+        result = q.execute()
+    except Exception:  # noqa: BLE001 — 외부 query 빌더, 결손은 빈 리스트로 흡수
+        return []
+    return list(result) if result else []
+
+
+@throttled_edgar
+def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
+    """EDGAR EntityFacts 에서 분기별 raw 행 리스트 추출 (Plan 07-02, FUND-07).
+
+    D-01 (공짜 backfill): `Company(ticker).get_facts()` 1회만 호출 — EntityFacts 에
+    과거 분기가 전부 딸려오므로 별도 호출 없이 전부 추출(추가 set_identity 없음).
+    D-04 (신규 추출 경로): 손익 4종 + EPS + 영업현금흐름(duration) + BS 3종(instant).
+    D-08: quarter 키는 period 종료일 기준 캘린더 분기 "YYYYQn".
+    D-05: 결손 value=None (0/-999999 금지). as-reported 만 — Q4 보정·분기 분해 금지(Phase 8).
+
+    Returns:
+        list[dict] — 각 행: ticker/source="EDGAR"/quarter/field/value/unit/accession/
+        period_start/period_end/period_type/reprt_code=None.
+    """
+    facts = Company(ticker).get_facts()  # D-01: get_facts 1회 (과거 분기 전부 포함)
+    rows: list[dict] = []
+
+    # 유량(duration, 분기 = period_length 3개월).
+    for concept, field in _EDGAR_DURATION_CONCEPTS:
+        for fact in _query_facts(facts, concept, "duration", 3):
+            row = _fact_to_row(ticker, field, fact, "duration")
+            if row is not None:
+                rows.append(row)
+
+    # 저량(instant, BS). [A5] concept 빈 결과 시 헬퍼 fallback.
+    for concept, field in _EDGAR_INSTANT_CONCEPTS:
+        instant_facts = _query_facts(facts, concept, "instant", None)
+        if not instant_facts:
+            instant_facts = _instant_fallback(facts, field)
+        for fact in instant_facts:
+            row = _fact_to_row(ticker, field, fact, "instant")
+            if row is not None:
+                rows.append(row)
+
+    # 발행주식수: facts.shares_outstanding_fact 있으면 행 추가, 없으면 skip.
+    shares_fact = getattr(facts, "shares_outstanding_fact", None)
+    if shares_fact is not None:
+        row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
+        if row is not None:
+            rows.append(row)
+
+    logger.info("%s | EDGAR 분기 raw 추출 완료 (%d행)", ticker, len(rows))
+    return rows
+
+
+def _instant_fallback(facts, field: str) -> list:
+    """[A5] concept 빈 결과 시 EntityFacts 헬퍼 fallback (total_assets/shareholders_equity).
+
+    헬퍼는 단일 스칼라만 반환할 수 있어 FinancialFact 리스트가 아니면 빈 리스트.
+    """
+    helper_name = {
+        "total_assets": "get_total_assets",
+        "total_equity": "get_shareholders_equity",
+    }.get(field)
+    if not helper_name:
+        return []
+    helper = getattr(facts, helper_name, None)
+    if not callable(helper):
+        return []
+    try:
+        result = helper()
+    except Exception:  # noqa: BLE001
+        return []
+    # FinancialFact (numeric_value 보유) 만 행으로 사용. 스칼라는 quarter 산출 불가 → skip.
+    if result is not None and hasattr(result, "numeric_value"):
+        return [result]
+    return []
+
+
 def fetch_edgar_cached(ticker: str, quarter_label: str) -> dict:
     """cache-first 페치 (market.py L89-102 패턴). 7d TTL, 키 "EDGAR|ticker|quarter"."""
     cached = cache.get_fund("EDGAR", ticker, quarter_label)
