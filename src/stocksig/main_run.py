@@ -42,7 +42,8 @@ from stocksig.compute.weekly import (
     week_to_date_close_return,
 )
 from stocksig.config import load_env
-from stocksig.io import cache, naver_scraper
+from stocksig.io import cache, fundamentals_delta, naver_scraper
+from stocksig.io import fundamentals_store as fund_store
 from stocksig.io.auth_check import AuthStatus, ping_dart, ping_edgar
 from stocksig.io.company import fetch_company_name
 from stocksig.io.fundamentals import fetch_fundamentals
@@ -250,6 +251,9 @@ def run(
     naver_scraper.reset_naver_count()
     # EXEC-04: run 시작마다 캐시 hit/miss 카운터 초기화 (다회 실행 누적 방지).
     cache.reset_cache_stats()
+    # FUND-08 / SC3: run 시작마다 델타 hit/miss·full-fetch 카운터 초기화
+    # (히스토리 경로는 시트1 경로와 완전 분리된 additive 경로 — D-07).
+    fund_store.reset_delta_stats()
 
     specs = read_tickers_extended(tickers_path)
     logger.info("main | 티커 %d개 로드 완료", len(specs))
@@ -320,6 +324,34 @@ def run(
             "실패 %d개 — 시트1에 표시됨: %s", len(failures), failed_syms
         )
 
+    # FUND-07/08 (D-07): 히스토리 경로 — 시트1 경로(PASS1/PASS2, D-06 불변)와 완전
+    # 분리된 별도 순차 루프. PASS2 write(wb.close) 이후·요약 직전에 실행하므로
+    # 히스토리 경로가 실패해도 시트1 산출물(portfolio_*.xlsx, 이미 저장됨)은 안전하다.
+    # 종목별 probe(접수번호)로 델타가 없으면 외부 전체호출 0(평소 ≈0, SC3), 델타 시에만
+    # 누적한다. 인증 실패 소스는 스킵하고, yf/Naver 전용 폴백 종목은 접수번호 개념이
+    # 없어 대상 외(deferred). 분기 경계에서 시트1 fetch와 히스토리 probe/fetch가 같은
+    # 종목에 이중 외부 호출될 수 있으나 드문 이벤트·시트1 회귀 위험 0이므로 허용(D-07).
+    for s in specs:
+        market = classify_market(s.symbol)
+        if market == "US":
+            source = "EDGAR"
+            if auth.edgar_ok is False:
+                continue  # 인증 실패 소스 스킵 (probe도 실패할 것)
+        elif market == "KR":
+            source = "DART"
+            if auth.dart_ok is False:
+                continue
+        else:
+            continue  # EDGAR/DART 외 소스는 접수번호 델타 대상 아님 (deferred)
+        try:
+            fundamentals_delta.sync_ticker_history(s.symbol, source)
+        except Exception as exc:  # noqa: BLE001 — 히스토리 경로 실패가 시트1을 깨지 않게
+            # T-04-03 / T-07-12: 예외 타입명만 로그 (API 키·예외 원문 미포함).
+            logger.warning(
+                "%s | 히스토리 경로 실패(%s) — 시트1 산출물은 영향 없음",
+                s.symbol, type(exc).__name__,
+            )
+
     # EXEC-04 / 로드맵 SC3 — 한국어 최종 실행 요약 블록 (콘솔/로그파일).
     # 카운트(정수)·티커 심볼만 출력 (T-04-01: API 키·예외 원문 미포함).
     stats = cache.get_cache_stats()
@@ -342,6 +374,14 @@ def run(
         stats["fund_miss"],
         stats["name_hit"],
         stats["name_miss"],
+    )
+    # FUND-08 / SC3 — 히스토리 델타 줄 (정수 카운트만, T-04-01 API 키·예외 원문 미포함).
+    delta = fund_store.get_delta_stats()
+    logger.info(
+        "히스토리: 델타 HIT %d/MISS %d · full-fetch %d",
+        delta["delta_hit"],
+        delta["delta_miss"],
+        delta["full_fetch"],
     )
     if failures:
         logger.info(
