@@ -18,6 +18,28 @@ import pandas as pd
 import pytest
 
 import stocksig.io.cache as _cache_mod
+import stocksig.io.fundamentals_store as _store_mod
+
+
+@pytest.fixture(autouse=True)
+def _isolated_fundamentals_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """모든 테스트에서 SQLite 펀더멘털 store를 tmp_path로 격리 (운영 `data/fundamentals.db` 오염 방지).
+
+    `_DB_PATH`는 상대 경로(`data/fundamentals.db`)라 프로젝트 루트에서 pytest 실행 시
+    운영 DB가 그대로 쓰인다. autouse로 전 테스트를 강제 격리해 store 모듈이 운영 분기
+    히스토리를 오염시키는 사고를 차단한다(`_isolated_disk_cache` L23-47 패턴 모방, sqlite 치환).
+    """
+    monkeypatch.setattr(_store_mod, "_DB_PATH", tmp_path / "data" / "fundamentals.db")
+    monkeypatch.setattr(_store_mod, "_conn", None)
+    yield
+    # Windows: sqlite 연결 핸들을 닫아야 tmp_path 정리가 PermissionError 없이 끝난다.
+    conn = getattr(_store_mod, "_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    monkeypatch.setattr(_store_mod, "_conn", None)
 
 
 @pytest.fixture(autouse=True)
