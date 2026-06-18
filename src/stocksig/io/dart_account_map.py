@@ -48,6 +48,27 @@ DART_ACCOUNT_ID_MAP: dict[str, tuple[str, ...]] = {
     "eps": (
         "ifrs-full_BasicEarningsLossPerShare",  # 005930 기본주당이익 [VERIFIED]
     ),
+    # --- D-03 슈퍼셋 신규 BS/CF 필드 (Plan 07-02, additive) ---
+    # [Open Q2 — 005930 BS/CF 실응답 1회 확정 후 VERIFIED]
+    "total_equity": (
+        "ifrs-full_Equity",  # 자본총계(지배+비지배)
+        "ifrs-full_EquityAttributableToOwnersOfParent",  # 지배기업 소유주지분 자본
+    ),
+    "total_liabilities": (
+        "ifrs-full_Liabilities",  # 부채총계
+    ),
+    "total_assets": (
+        "ifrs-full_Assets",  # 자산총계(총자산)
+    ),
+    "operating_cash_flow": (
+        "ifrs-full_CashFlowsFromUsedInOperatingActivities",  # 영업활동현금흐름
+    ),
+    # 발행주식수: finstate_all 에 통상 부재(Open Q2 RESOLVED).
+    # 매핑 키만 placeholder 로 둔다 — finstate_all 부재 시 Phase 8 또는 yf 보완으로
+    # 위임하며, 본 plan 에서는 별도 API 호출을 추가하지 않는다(D-03 슈퍼셋 결손=None).
+    "shares_outstanding": (
+        "ifrs-full_NumberOfSharesOutstanding",  # placeholder — finstate_all 통상 부재
+    ),
 }
 
 # 2차 매핑: account_nm(한글 라벨) → 논리 지표명. account_id 미매칭 시 폴백.
@@ -62,8 +83,22 @@ DART_ACCOUNT_MAP: dict[str, tuple[str, ...]] = {
         "지배기업 소유주지분",
     ),
     "eps": ("기본주당이익", "기본주당순이익"),  # 005930=기본주당이익 [VERIFIED]
+    # --- D-03 슈퍼셋 신규 BS/CF 한글 라벨 폴백 (Plan 07-02, additive) ---
+    # [Open Q2 — 005930 BS/CF 실응답 1회 확정 후 VERIFIED]
+    "total_equity": ("자본총계", "자본총계(지배+비지배)", "자본총계 (지배+비지배)"),
+    "total_liabilities": ("부채총계",),
+    "total_assets": ("자산총계",),
+    "operating_cash_flow": ("영업활동현금흐름", "영업활동으로 인한 현금흐름"),
+    # 발행주식수: finstate_all 부재 시 Phase 8 또는 yf 보완으로 위임(본 plan API 호출 없음).
+    "shares_outstanding": ("발행주식수", "유통주식수"),
 }
 
 # 매출총이익 미표기(금융업 등) 시 GPM 결손 → yf 폴백 신호용 키 목록.
 # net_income/eps 가 손익계산서(IS)에 없으면 포괄손익계산서(CIS)에도 ProfitLoss 존재.
 SJ_DIV_INCOME_STATEMENT: tuple[str, ...] = ("IS", "CIS")
+
+# D-04 신규 추출 경로 sj_div 필터 (Plan 07-02).
+# 재무상태표(BS) = 저량(instant): 자본총계·부채총계·총자산.
+# 현금흐름표(CF) = 유량(duration): 영업활동현금흐름.
+SJ_DIV_BALANCE_SHEET: tuple[str, ...] = ("BS",)
+SJ_DIV_CASHFLOW: tuple[str, ...] = ("CF",)
