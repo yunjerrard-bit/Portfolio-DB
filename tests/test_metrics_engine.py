@@ -23,9 +23,21 @@ from stocksig.io import fundamentals_store as fs
 from stocksig.io import metrics_engine as me
 
 
+def _to_fetch_row(r: tuple) -> tuple:
+    """raw_row 12-tuple → fetch_raw_quarters 7-tuple 형태로 변환 (테스트 헬퍼).
+
+    raw_row: ticker, source, quarter, field, value, unit, accession,
+             period_start, period_end, period_type, reprt_code, fetched_at
+    fetch_raw_quarters: quarter, source, field, value, period_type, reprt_code, unit
+    """
+    (_ticker, source, quarter, field, value, unit, _accession,
+     _ps, _pe, period_type, reprt_code, _fetched) = r
+    return (quarter, source, field, value, period_type, reprt_code, unit)
+
+
 def _by_qf(rows: list[tuple]) -> dict:
-    """fetch_raw_quarters 행 리스트 → metrics_engine 정규화 dict (테스트 헬퍼)."""
-    return me._normalize_quarters(rows)
+    """raw_row 행 리스트 → metrics_engine 정규화 dict (테스트 헬퍼)."""
+    return me._normalize_quarters([_to_fetch_row(r) for r in rows])
 
 
 # === store 입력 경로 — GREEN (08-01 구현) ===================================
