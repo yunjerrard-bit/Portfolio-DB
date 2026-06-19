@@ -163,6 +163,22 @@ def count_rows(ticker: str | None = None) -> int:
     return cur.fetchone()[0]
 
 
+def fetch_raw_quarters(ticker: str) -> list[tuple]:
+    """raw_facts 분기 행을 quarter 오름차순으로 조회 (Phase 8 엔진 입력 진입점).
+
+    각 행 = (quarter, source, field, value, period_type, reprt_code, unit).
+    value는 결손 시 None(D-05). 미존재 ticker는 빈 list.
+    `count_rows`(L155-163) analog — `get_store()` 재사용(신규 connection 금지),
+    전 SQL `?` 파라미터 바인딩(ASVS V5, f-string/`%` SQL 금지, T-08-01).
+    """
+    cur = get_store().execute(
+        "SELECT quarter, source, field, value, period_type, reprt_code, unit "
+        "FROM raw_facts WHERE ticker=? ORDER BY quarter",
+        (ticker,),
+    )
+    return cur.fetchall()
+
+
 # --- 델타 hit/miss 카운터 API (cache.py reset/get_stats 복제) -----------
 
 
