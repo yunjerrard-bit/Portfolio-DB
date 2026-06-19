@@ -56,6 +56,13 @@ _SANITY_BOUNDS: dict[str, tuple[float, float]] = {
     "PCR": (0.0, 100.0),
 }
 
+# 저량(stock, BS instant) field — PER_SHARE 분자가 이들이면 TTM이 아니라 최근 시점값
+# 사용(BPS=total_equity/shares). 그 외 분자(net_income/revenue/operating_cash_flow)는
+# 유량 → TTM. dart_client._QUARTERLY_BS_FIELDS analog.
+_STOCK_FIELDS: frozenset[str] = frozenset(
+    {"total_equity", "total_assets", "total_liabilities", "shares_outstanding"}
+)
+
 
 # --- 캘린더 분기 산술 (Pitfall 5 경계 정확) ---------------------------------
 
@@ -201,13 +208,18 @@ def compute_cell(
     if mdef.mtype is MetricType.DERIVED:
         return _empty_cell("파생 지표: 2차 계산(PEG)")
 
-    # 분자: 유량/주당 분자 = TTM, 저량(분모로 쓰이는 BS instant) = 최근.
-    if mdef.mtype in (MetricType.FLOW_TTM, MetricType.HYBRID, MetricType.PER_SHARE):
-        numer = _ttm_sum(raw_by_qf, mdef.numerator, quarter)
-        numer_sources = _sources_for_ttm(raw_by_qf, mdef.numerator, quarter)
-    else:  # STOCK
+    # 분자: 유량 분자 = TTM, 저량 분자(BPS=total_equity 등 BS instant) = 최근 시점값.
+    # FLOW_TTM/HYBRID 분자는 항상 유량(TTM). PER_SHARE는 분자가 stock field면 최근,
+    # 아니면 TTM(EPS_ttm=net_income TTM·SPS=revenue TTM·OCF_ps=OCF TTM).
+    numer_is_stock = mdef.mtype is MetricType.STOCK or (
+        mdef.mtype is MetricType.PER_SHARE and mdef.numerator in _STOCK_FIELDS
+    )
+    if numer_is_stock:
         numer = _recent(raw_by_qf, mdef.numerator, quarter)
         numer_sources = [_source_for_recent(raw_by_qf, mdef.numerator, quarter)]
+    else:
+        numer = _ttm_sum(raw_by_qf, mdef.numerator, quarter)
+        numer_sources = _sources_for_ttm(raw_by_qf, mdef.numerator, quarter)
 
     if _is_missing(numer):
         return _empty_cell(f"{name}: 분자({mdef.numerator}) 미존재 또는 TTM 결손")

@@ -156,3 +156,126 @@ def test_edgar_q4():
     raw = _by_qf(rows)
     # 2026Q1 TTM = [2026Q1, 2025Q4, 2025Q3, 2025Q2] → 2025Q4 부재 → None (보정 없음).
     assert me._ttm_sum(raw, "revenue", "2026Q1") is None
+
+
+# --- Task 2: compute_matrix + per-share + sanity + provenance ---------------
+
+
+def _four_q_revenue(field="revenue", base=100.0, source="EDGAR"):
+    """2025Q2~2026Q1 동일 field 4분기 행 (TTM 산출용)."""
+    return [
+        raw_row(quarter=q, field=field, value=base, source=source)
+        for q in ("2025Q2", "2025Q3", "2025Q4", "2026Q1")
+    ]
+
+
+def test_compute_matrix_shape():
+    """D-06: compute_matrix → {metric: {quarter: MetricCell}} 분기 매트릭스 전체."""
+    rows = [
+        *_four_q_revenue("revenue", 1000.0),
+        *_four_q_revenue("gross_profit", 400.0),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+
+    # REGISTRY 9종 + 주당 분모 4종 = 13 metric 모두 키 존재.
+    assert "GPM" in matrix and "ROE" in matrix and "PER" in matrix and "PEG" in matrix
+    # 최신 분기 열 존재.
+    assert "2026Q1" in matrix["GPM"]
+    # GPM = gross_profit TTM / revenue TTM = 1600/4000 = 0.4.
+    assert matrix["GPM"]["2026Q1"].value == pytest.approx(0.4)
+
+
+def test_reproduce():
+    """SC3: 저장 raw만으로 GPM/OPM 재현 + ROE 신규 — 외부 재호출 0."""
+    rows = [
+        *_four_q_revenue("revenue", 1000.0),
+        *_four_q_revenue("gross_profit", 400.0),
+        *_four_q_revenue("op_income", 250.0),
+        *_four_q_revenue("net_income", 200.0),
+        raw_row(quarter="2026Q1", field="total_equity", value=8000.0, period_type="instant"),
+    ]
+    called = {"n": 0}
+
+    def _fetch(t):
+        called["n"] += 1
+        return [_to_fetch_row(r) for r in rows]
+
+    matrix = me.compute_matrix("AAPL", fetch_fn=_fetch)
+    assert called["n"] == 1, "fetch는 1회만 (외부 재호출 0, D-06)"
+
+    assert matrix["GPM"]["2026Q1"].value == pytest.approx(0.4)
+    assert matrix["OPM"]["2026Q1"].value == pytest.approx(0.25)
+    # ROE = net_income TTM(800) / total_equity 최근(8000) = 0.1 (HYBRID, D-03).
+    assert matrix["ROE"]["2026Q1"].value == pytest.approx(0.1)
+
+
+def test_new_metrics():
+    """SC3: ROE/ROA/PBR 신규 — 동일 원천 즉시 산출. PBR 분모=BPS=total_equity/shares."""
+    rows = [
+        *_four_q_revenue("net_income", 200.0),
+        raw_row(quarter="2026Q1", field="total_equity", value=8000.0, period_type="instant"),
+        raw_row(quarter="2026Q1", field="total_assets", value=16000.0, period_type="instant"),
+        raw_row(quarter="2026Q1", field="shares_outstanding", value=100.0, period_type="instant"),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+
+    assert matrix["ROE"]["2026Q1"].value == pytest.approx(800.0 / 8000.0)
+    assert matrix["ROA"]["2026Q1"].value == pytest.approx(800.0 / 16000.0)
+    # BPS = total_equity 최근(8000) / shares(100) = 80.
+    assert matrix["BPS"]["2026Q1"].value == pytest.approx(80.0)
+    # PBR 셀은 compute_cell 단독으로는 비계산(가격 의존, D-07).
+    assert matrix["PBR"]["2026Q1"].value is None
+    # 가격 주입 시 price_ratio로 PBR 산출 = price(160) / BPS(80) = 2.0.
+    pbr = me.price_ratio(matrix["BPS"]["2026Q1"], 160.0)
+    assert pbr.value == pytest.approx(2.0)
+
+
+def test_provenance_or_pershare():
+    """SC5/D-08: provenance 혼합 "+"결합 + per-share 분모/가격 분리(D-07)."""
+    # net_income은 EDGAR, shares는 yf → EPS_ttm source = "EDGAR+yf".
+    rows = [
+        *_four_q_revenue("net_income", 200.0, source="EDGAR"),
+        raw_row(quarter="2026Q1", field="shares_outstanding", value=100.0,
+                period_type="instant", source="yf"),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+
+    eps = matrix["EPS_ttm"]["2026Q1"]
+    assert eps.value == pytest.approx(800.0 / 100.0)
+    assert eps.source == "EDGAR+yf", "혼합 provenance 정렬 + 결합"
+
+    # PER 셀 자체는 비율 미계산(D-07) — 호출자가 가격 주입.
+    assert matrix["PER"]["2026Q1"].value is None
+    per = me.price_ratio(matrix["EPS_ttm"]["2026Q1"], 80.0)
+    assert per.value == pytest.approx(10.0)
+    assert per.source == "EDGAR+yf"
+
+
+def test_sanity_bounds():
+    """D-05: sanity 범위 밖 → 빈값+사유(0 아님)."""
+    # GPM = gross_profit TTM(8000) / revenue TTM(4000) = 2.0 > 1.5 상한 → 빈값.
+    rows = [
+        *_four_q_revenue("revenue", 1000.0),
+        *_four_q_revenue("gross_profit", 2000.0),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+    cell = matrix["GPM"]["2026Q1"]
+    assert cell.value is None
+    assert "sanity" in (cell.note or "")
+
+
+def test_shares_missing_pershare():
+    """Pitfall 4: shares_outstanding 결손 → per-share 분모 빈값+'발행주식수' 사유."""
+    rows = [*_four_q_revenue("net_income", 200.0)]  # shares 행 없음.
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+    eps = matrix["EPS_ttm"]["2026Q1"]
+    assert eps.value is None
+    assert "발행주식수" in (eps.note or "")
+
+
+def test_price_ratio_negative_denom():
+    """PCR: 분모(OCF_ps) ≤ 0 → 빈값+사유 (가격 주입 게이트)."""
+    neg = me.MetricCell(value=-5.0, source="EDGAR", note=None)
+    out = me.price_ratio(neg, 100.0)
+    assert out.value is None
+    assert "분모" in (out.note or "")
