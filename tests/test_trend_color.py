@@ -73,6 +73,15 @@ def test_tie_is_plain():
     assert tc.relative_bucket("PER", 10.0, [10.0, 10.0, 10.0], "tech") == "무색"
 
 
+def test_median_of_three_is_neutral():
+    # CR-01 회귀: 유효 peer 정확히 3종(D-07 최소·소규모 산업 다수)에서 중앙값은
+    # below=1·above=1 → lower_frac=upper_frac=1/3. 경계 포함(<=) 시 "low"/"high"로
+    # 오분류되어 중앙값 기업이 거짓 매수/매도 색을 받음(Core Value 위반).
+    # 중앙값은 방향과 무관하게 항상 "무색"이어야 한다.
+    assert tc.relative_bucket("PER", 20.0, [10.0, 20.0, 30.0], "tech") == "무색"
+    assert tc.relative_bucket("ROE", 20.0, [10.0, 20.0, 30.0], "tech") == "무색"
+
+
 # === yoy_glyph (D-08) ========================================================
 
 
