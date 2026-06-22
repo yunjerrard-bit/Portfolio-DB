@@ -12,36 +12,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from fixtures.history_fixtures import build_ohlcv
 from stocksig.io import quarter_price as qp
 from stocksig.io.metrics_engine import _calendar_quarter_offset
 
 
-def _synthetic_ohlcv() -> pd.DataFrame:
-    """4분기(2024Q1~Q4) 합성 OHLCV. 각 분기 마지막 거래일 Close가 분기별로 다르다.
-
-    분기 경계가 휴장일(주말 등)이라도 resample("QE").last()가 그 분기
-    마지막 *거래일* 종가를 잡아야 함을 확인하기 위해 영업일(freq="B")로 생성.
-    """
-    dates = pd.date_range(start="2024-01-01", end="2024-12-31", freq="B")
-    # 분기별 식별 가능한 Close: 분기 번호 * 10 + 일자 비례 증가 (마지막 거래일이 최댓값)
-    close = []
-    for d in dates:
-        q = (d.month - 1) // 3 + 1
-        close.append(q * 100.0 + d.dayofyear * 0.01)
-    return pd.DataFrame(
-        {
-            "Open": close,
-            "High": [c * 1.01 for c in close],
-            "Low": [c * 0.99 for c in close],
-            "Close": close,
-            "Volume": [1_000_000] * len(close),
-        },
-        index=dates,
-    )
-
-
 def test_quarter_end_close_and_current(monkeypatch: pytest.MonkeyPatch):
-    df = _synthetic_ohlcv()
+    df = build_ohlcv()  # 2024Q1~Q4 합성 OHLCV (Task 3 공용 fixture)
     monkeypatch.setattr(qp, "fetch_ohlcv_cached", lambda t: df)
 
     qmap, current = qp.quarter_end_prices("AAPL")

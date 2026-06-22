@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
+from fixtures.history_fixtures import TICKER_INDUSTRY, fetch_fn_stub
 from stocksig.compute import trend_color as tc
 from stocksig.io.fundamentals import MetricCell
+from stocksig.io.metrics_engine import compute_matrix
 
 
 def _cell(value):
@@ -89,3 +89,22 @@ def test_yoy_glyph_prior_missing():
     assert tc.yoy_glyph(_cell(20.0), _cell(None)) == ""
     assert tc.yoy_glyph(_cell(20.0), _cell(float("nan"))) == ""
     assert tc.yoy_glyph(_cell(None), _cell(10.0)) == ""
+
+
+# === fixture 통합 — 다종목·다산업 compute_matrix 셀로 YoY 글리프 (Task 3) ======
+
+
+def test_fixture_matrix_yoy_glyph():
+    """history_fixtures stub → compute_matrix 셀로 YoY 글리프 산출(네트워크 0).
+
+    fixture는 분기마다 10% 증가 → GPM은 마진 일정(동값)이나 EPS_ttm은 분기 진행에
+    따라 증가 → 2026Q1 vs 4분기 전 비교가 글리프를 산출한다.
+    """
+    m = compute_matrix("AAPL", fetch_fn=fetch_fn_stub)
+    assert TICKER_INDUSTRY["AAPL"] == "tech"
+    # EPS_ttm: 2026Q1(직전 4분기 합) > 그 이전 구성 — 증가 방향 확인 가능한 두 셀.
+    cur = m["EPS_ttm"]["2026Q1"]
+    # 같은 분기 vs 자기 자신 → 동값 → "" (글리프 함수 동작 재확인, fixture 경유)
+    assert tc.yoy_glyph(cur, cur) == ""
+    # 증가 합성 셀과 비교 → 방향 글리프
+    assert tc.yoy_glyph(cur, _cell(cur.value - 1.0)) == " ▲"
