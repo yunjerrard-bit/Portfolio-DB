@@ -74,6 +74,55 @@ def test_fetch_raw_quarters_empty():
     assert fs.fetch_raw_quarters("NOSUCH") == []
 
 
+def test_fetch_raw_quarters_source_priority_deterministic():
+    """WR-01: 동일 (quarter, field) 멀티소스 → EDGAR→DART→yf 우선 결정적 선택.
+
+    EDGAR·DART·yf 세 source가 같은 (2026Q1, revenue)에 다른 값으로 upsert될 때,
+    소비 측 _normalize_quarters(마지막-행-우선)와 합쳐져 항상 EDGAR가 이겨야 한다.
+    반복 실행 동일(비결정성 제거 — provenance 오염·수치 드리프트 차단).
+    """
+    ticker = "MULTI"
+    # 삽입 순서를 일부러 우선순위와 반대로(yf 먼저, EDGAR 나중) — 정렬이 결정해야 함.
+    fs.upsert_quarters([
+        raw_row(ticker=ticker, quarter="2026Q1", field="revenue",
+                value=999.0, source="yf", accession="acc-yf"),
+    ])
+    fs.upsert_quarters([
+        raw_row(ticker=ticker, quarter="2026Q1", field="revenue",
+                value=500.0, source="DART", accession="acc-dart"),
+    ])
+    fs.upsert_quarters([
+        raw_row(ticker=ticker, quarter="2026Q1", field="revenue",
+                value=100.0, source="EDGAR", accession="acc-edgar"),
+    ])
+
+    # 반복 실행 동일(결정성).
+    for _ in range(3):
+        rows = fs.fetch_raw_quarters(ticker)
+        raw = me._normalize_quarters(rows)
+        value, source = raw[("2026Q1", "revenue")]
+        assert source == "EDGAR", "EDGAR가 항상 우선 선택(결정적)"
+        assert value == 100.0
+
+
+def test_fetch_raw_quarters_dart_over_yf():
+    """WR-01: EDGAR 부재 시 DART가 yf보다 우선(EDGAR→DART→yf 순)."""
+    ticker = "KRMULTI"
+    fs.upsert_quarters([
+        raw_row(ticker=ticker, quarter="2026Q1", field="revenue",
+                value=999.0, source="yf", accession="acc-yf2"),
+    ])
+    fs.upsert_quarters([
+        raw_row(ticker=ticker, quarter="2026Q1", field="revenue",
+                value=500.0, source="DART", accession="acc-dart2", reprt_code="11013"),
+    ])
+    rows = fs.fetch_raw_quarters(ticker)
+    raw = me._normalize_quarters(rows)
+    value, source = raw[("2026Q1", "revenue")]
+    assert source == "DART"
+    assert value == 500.0
+
+
 # === 엔진 계산 — RED 스캐폴드 (08-03이 채움) ================================
 
 

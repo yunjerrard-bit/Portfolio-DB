@@ -164,16 +164,26 @@ def count_rows(ticker: str | None = None) -> int:
 
 
 def fetch_raw_quarters(ticker: str) -> list[tuple]:
-    """raw_facts 분기 행을 quarter 오름차순으로 조회 (Phase 8 엔진 입력 진입점).
+    """raw_facts 분기 행을 quarter 오름차순 + source 우선순위로 조회 (Phase 8 엔진 입력).
 
     각 행 = (quarter, source, field, value, period_type, reprt_code, unit).
     value는 결손 시 None(D-05). 미존재 ticker는 빈 list.
     `count_rows`(L155-163) analog — `get_store()` 재사용(신규 connection 금지),
     전 SQL `?` 파라미터 바인딩(ASVS V5, f-string/`%` SQL 금지, T-08-01).
+
+    **결정적 source 우선순위(WR-01 — EDGAR→DART→yf):** 동일 `(quarter, field)`에 복수
+    source 행이 있을 때, 소비 측 `metrics_engine._normalize_quarters`가 마지막-행-우선
+    덮어쓰기(L101 `out[(q,field)]=...`)이므로, **우선순위가 높은 source(EDGAR)가 정렬상
+    마지막에 오도록** 2차 정렬키를 `DESC`로 둔다. CASE source ... 는 SQL 리터럴이며 사용자
+    입력 미진입(T-08-01 불변 — `?`-바인딩·`get_store()` 재사용 유지). 방향 정확성의 단일
+    진실원천은 결정성 단언 테스트(EDGAR 최종 선택·반복 동일)이다.
     """
     cur = get_store().execute(
         "SELECT quarter, source, field, value, period_type, reprt_code, unit "
-        "FROM raw_facts WHERE ticker=? ORDER BY quarter",
+        "FROM raw_facts WHERE ticker=? "
+        "ORDER BY quarter, "
+        "CASE source WHEN 'EDGAR' THEN 0 WHEN 'DART' THEN 1 WHEN 'yf' THEN 2 ELSE 3 END "
+        "DESC",
         (ticker,),
     )
     return cur.fetchall()
