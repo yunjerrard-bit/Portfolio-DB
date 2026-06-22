@@ -58,9 +58,36 @@ def main() -> int:
         action="store_true",
         help="시트1(통합 포트폴리오)만 작성하고 종목별 시트는 생략",
     )
+
+    # history 서브커맨드 (D-15): 펀더멘털 트렌드 엑셀 렌더 — main_run.run 과 완전 분리.
+    sub = parser.add_subparsers(dest="cmd")
+    p_hist = sub.add_parser(
+        "history",
+        help="펀더멘털 트렌드 엑셀 렌더 (DB → fundamentals_history_*.xlsx)",
+        description="펀더멘털 트렌드 엑셀 렌더 (DB → fundamentals_history_*.xlsx)",
+    )
+    p_hist.add_argument("--tickers", default="tickers.txt")
+    p_hist.add_argument("--output-dir", default="output")
+
     args = parser.parse_args()
 
-    # 늦은 import: argparse --help가 의존성 import 전에 동작하도록
+    # history 분기: 시트1 흐름(main_run.run)과 분리된 별도 엔트리(D-15).
+    if getattr(args, "cmd", None) == "history":
+        from stocksig.io.history_render import run_history
+
+        try:
+            path = run_history(args.tickers, args.output_dir)
+        except SystemExit:
+            raise
+        except Exception:
+            logger.exception("main | history 실행 실패")
+            return 1
+        # DB 미적재 시 run_history 가 None + 안내 출력 → 깔끔 종료(예외 아님).
+        if path is not None:
+            print(f"완료: {path}")
+        return 0
+
+    # 기본(portfolio) 흐름 — 하위호환. 늦은 import: --help 가 의존성 import 전에 동작.
     from stocksig.main_run import run
 
     try:
