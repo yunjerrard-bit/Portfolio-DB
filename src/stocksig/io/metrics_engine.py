@@ -204,9 +204,10 @@ def compute_cell(
     if mdef.price_denominator is not None:
         return _empty_cell("가격 의존 지표: price_ratio로 가격 주입 필요")
 
-    # DERIVED(PEG) — 2차 파생. compute_cell 단독 산출 불가(엔진 후처리).
+    # DERIVED(PEG) — 2차 파생. compute_cell 단독 산출 불가(가격 의존).
+    # 호출자가 compute_peg_cell(PER, EPS_ttm 현재, EPS_ttm 4분기전)로 산출(D-07).
     if mdef.mtype is MetricType.DERIVED:
-        return _empty_cell("파생 지표: 2차 계산(PEG)")
+        return _empty_cell("파생 지표: compute_peg_cell로 2차 계산(PEG)")
 
     # 분자: 유량 분자 = TTM, 저량 분자(BPS=total_equity 등 BS instant) = 최근 시점값.
     # FLOW_TTM/HYBRID 분자는 항상 유량(TTM). PER_SHARE는 분자가 stock field면 최근,
@@ -263,6 +264,38 @@ def price_ratio(denom_cell: MetricCell, price: float | None) -> MetricCell:
     return MetricCell(value=price / denom_cell.value, source=denom_cell.source, note=None)
 
 
+def compute_peg_cell(
+    per_value: float | None,
+    eps_ttm: float | None,
+    eps_prior: float | None,
+) -> MetricCell:
+    """PEG 2단계 공개 API — PER value·EPS 성장률에서 PEG 산출 (진실 #8·#9, FUND-09).
+
+    PER의 `price_ratio(denom_cell, price)` 2단계 계약과 **대칭**인 공개 진입점.
+    PEG는 PER(가격 의존)에 다시 의존하므로 registry/compute_matrix가 값을 직접 산출할
+    수 없다(D-07 가격 비결합). 따라서 호출자(Phase 9/10)가 가격 주입 후 본 함수를 호출한다.
+
+    산식·엣지케이스 4종(PER 없음/전년 EPS 미존재/전년 EPS 0/성장률 ≤ 0)은
+    `fundamentals._compute_peg`에 위임(신규 산식 작성 금지, Don't Hand-Roll). 산출 후
+    sanity bounds("PEG": 0~10, `_apply_sanity` 재사용) 적용 — 범위 밖은 빈값+사유.
+
+    provenance: per_value만 받으므로 source=None(fundamentals._compute_peg와 동일).
+    호출자가 PER 셀 source를 보존하려면 결과 셀의 source를 별도 주입하면 된다.
+
+    인자:
+      per_value: price_ratio(matrix["EPS_ttm"][q], price).value (가격 주입 후 PER)
+      eps_ttm:   matrix["EPS_ttm"][q].value (현재 분기 per-share EPS, 최근 TTM)
+      eps_prior: matrix["EPS_ttm"][q-4].value (_calendar_quarter_offset(q,-4))
+    """
+    cell = _compute_peg(per_value, eps_ttm, eps_prior)
+    if _is_missing(cell.value):
+        return cell
+    ok, reason = _apply_sanity("PEG", cell.value)
+    if not ok:
+        return MetricCell(value=None, source=cell.source, note=reason)
+    return cell
+
+
 def compute_matrix(
     ticker: str,
     fetch_fn: Callable[[str], list[tuple]] = fetch_raw_quarters,
@@ -271,8 +304,24 @@ def compute_matrix(
 
     반환 = `{metric_name: {quarter: MetricCell}}`. 최신값 = 마지막 분기 열.
     fetch_fn 주입 가능(테스트 격리·DB 비결합). 가격 의존 4종(PER/PBR/PCR/PSR)은
-    per-share 분모 셀만 산출 → 호출자가 price_ratio로 가격 주입(D-07). PEG(DERIVED)는
-    PER + EPS 성장률 2차 계산(가격 의존이라 분모만 산출 후 후처리).
+    per-share 분모 셀만 산출 → 호출자가 price_ratio로 가격 주입(D-07).
+
+    **Phase 9/10 PEG 소비 계약 (가격 의존 2차 파생 — compute_peg_cell 공개 API):**
+    PEG는 compute_matrix가 직접 산출하지 않는다(PER 가격 의존). 호출자가 3단으로 산출:
+      ① PER 확보:   per = price_ratio(matrix["EPS_ttm"][q], price)   # 가격 주입(D-07)
+      ② EPS 추출:   eps_now   = matrix["EPS_ttm"][q].value          # 현재 TTM per-share EPS
+                    q_prior   = _calendar_quarter_offset(q, -4)     # 4분기 전
+                    eps_prior = matrix["EPS_ttm"][q_prior].value
+      ③ PEG 산출:   peg = compute_peg_cell(per.value, eps_now, eps_prior)  # MetricCell
+    예시:
+      >>> matrix = compute_matrix("AAPL")
+      >>> per = price_ratio(matrix["EPS_ttm"]["2026Q1"], price=48.0)
+      >>> qp = _calendar_quarter_offset("2026Q1", -4)  # "2025Q1"
+      >>> peg = compute_peg_cell(
+      ...     per.value,
+      ...     matrix["EPS_ttm"]["2026Q1"].value,
+      ...     matrix["EPS_ttm"][qp].value,
+      ... )
     """
     rows = fetch_fn(ticker)
     raw_by_qf = _normalize_quarters(rows)
@@ -292,6 +341,7 @@ def compute_matrix(
 __all__ = [
     "compute_matrix",
     "compute_cell",
+    "compute_peg_cell",
     "price_ratio",
     "_normalize_quarters",
     "_recent",
@@ -299,5 +349,4 @@ __all__ = [
     "_prior_4_quarters",
     "_calendar_quarter_offset",
     "_merge_provenance",
-    "_compute_peg",
 ]
