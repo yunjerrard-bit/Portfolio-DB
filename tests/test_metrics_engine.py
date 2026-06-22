@@ -179,6 +179,9 @@ def test_compute_matrix_shape():
 
     # REGISTRY 9종 + 주당 분모 4종 = 13 metric 모두 키 존재.
     assert "GPM" in matrix and "ROE" in matrix and "PER" in matrix and "PEG" in matrix
+    # PEG는 공개 2단계 API(compute_peg_cell)로 산출 가능해야 한다 — 키 존재만 아님(결함 은닉 제거).
+    # PER(20)·EPS_ttm 현재(12)·4분기전(10) → 성장률 20% → PEG=1.0.
+    assert me.compute_peg_cell(20.0, 12.0, 10.0).value == pytest.approx(1.0)
     # 최신 분기 열 존재.
     assert "2026Q1" in matrix["GPM"]
     # GPM = gross_profit TTM / revenue TTM = 1600/4000 = 0.4.
@@ -279,3 +282,88 @@ def test_price_ratio_negative_denom():
     out = me.price_ratio(neg, 100.0)
     assert out.value is None
     assert "분모" in (out.note or "")
+
+
+# --- 08-04 Task 1: PEG 2단계 공개 API compute_peg_cell -----------------------
+
+
+def test_compute_peg_cell_value():
+    """진실 #8: PEG value 단언(키 존재만 아님). PER=20·성장률 20% → PEG=1.0."""
+    # 성장률 = (12/10 − 1)×100 = 20% → PEG = 20.0 / 20 = 1.0.
+    cell = me.compute_peg_cell(per_value=20.0, eps_ttm=12.0, eps_prior=10.0)
+    assert cell.value == pytest.approx(1.0)
+
+
+def test_compute_peg_cell_edges():
+    """fundamentals 엣지 4종 위임 — value None + 한국어 사유."""
+    # 성장률 ≤ 0 (eps_ttm ≤ eps_prior).
+    flat = me.compute_peg_cell(per_value=20.0, eps_ttm=10.0, eps_prior=12.0)
+    assert flat.value is None
+    assert flat.note and "성장률" in flat.note
+
+    # 전년 EPS 0.
+    zero_prior = me.compute_peg_cell(per_value=20.0, eps_ttm=12.0, eps_prior=0.0)
+    assert zero_prior.value is None
+    assert zero_prior.note
+
+    # PER 없음.
+    no_per = me.compute_peg_cell(per_value=None, eps_ttm=12.0, eps_prior=10.0)
+    assert no_per.value is None
+    assert no_per.note and "PER" in no_per.note
+
+
+def test_peg_end_to_end_from_matrix():
+    """진실 #9: compute_matrix → price_ratio(PER) → compute_peg_cell, 외부 재호출 0.
+
+    현·4분기전 EPS_ttm 분모 셀을 raw로 산출 → 가격 주입으로 PER 확보 →
+    compute_peg_cell(PER, EPS_ttm 현재.value, EPS_ttm 4분기전.value) → PEG value 산출.
+    """
+    # EPS_ttm 현재(2026Q1) = net_income TTM(2025Q2~2026Q1) / shares.
+    # EPS_ttm 4분기전(2025Q1) = net_income TTM(2024Q2~2025Q1) / shares.
+    rows = [
+        # 2025Q1 EPS_ttm용: 2024Q2~2025Q1 net_income.
+        raw_row(quarter="2024Q2", field="net_income", value=100.0),
+        raw_row(quarter="2024Q3", field="net_income", value=100.0),
+        raw_row(quarter="2024Q4", field="net_income", value=100.0),
+        raw_row(quarter="2025Q1", field="net_income", value=100.0),
+        # 2026Q1 EPS_ttm용: 2025Q2~2026Q1 net_income (성장).
+        raw_row(quarter="2025Q2", field="net_income", value=120.0),
+        raw_row(quarter="2025Q3", field="net_income", value=120.0),
+        raw_row(quarter="2025Q4", field="net_income", value=120.0),
+        raw_row(quarter="2026Q1", field="net_income", value=120.0),
+        raw_row(quarter="2025Q1", field="shares_outstanding", value=100.0,
+                period_type="instant"),
+        raw_row(quarter="2026Q1", field="shares_outstanding", value=100.0,
+                period_type="instant"),
+    ]
+    called = {"n": 0}
+
+    def _fetch(t):
+        called["n"] += 1
+        return [_to_fetch_row(r) for r in rows]
+
+    matrix = me.compute_matrix("AAPL", fetch_fn=_fetch)
+    assert called["n"] == 1, "fetch는 1회만 (외부 재호출 0)"
+
+    # EPS_ttm 현재(2026Q1) = 480/100 = 4.8. 4분기전(2025Q1) = 400/100 = 4.0.
+    eps_now = matrix["EPS_ttm"]["2026Q1"]
+    eps_prior = matrix["EPS_ttm"][me._calendar_quarter_offset("2026Q1", -4)]
+    assert eps_now.value == pytest.approx(4.8)
+    assert eps_prior.value == pytest.approx(4.0)
+
+    # 가격 주입 → PER = price(48) / EPS_ttm(4.8) = 10.0.
+    per = me.price_ratio(eps_now, 48.0)
+    assert per.value == pytest.approx(10.0)
+
+    # PEG: 성장률 = (4.8/4.0 − 1)×100 = 20% → PEG = 10.0/20 = 0.5.
+    peg = me.compute_peg_cell(per.value, eps_now.value, eps_prior.value)
+    assert peg.value is not None
+    assert peg.value == pytest.approx(0.5)
+
+
+def test_peg_sanity_bounds():
+    """PEG sanity bounds(0~10) 적용 — 범위 밖 → 빈값+사유."""
+    # PER=100·성장률 1% → PEG = 100/1 = 100 > 10 상한 → 빈값.
+    cell = me.compute_peg_cell(per_value=100.0, eps_ttm=10.1, eps_prior=10.0)
+    assert cell.value is None
+    assert "sanity" in (cell.note or "")
