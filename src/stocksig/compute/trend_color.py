@@ -53,9 +53,9 @@ def relative_bucket(metric: str, value, peer_values: list, industry: str) -> str
     lower_frac = below / total      # 0에 가까울수록 낮은 값
     upper_frac = above / total      # 0에 가까울수록 높은 값
 
-    if lower_frac <= 1.0 / 3.0:
+    if lower_frac < 1.0 / 3.0:
         rank = "low"
-    elif upper_frac <= 1.0 / 3.0:
+    elif upper_frac < 1.0 / 3.0:
         rank = "high"
     else:
         rank = "mid"
