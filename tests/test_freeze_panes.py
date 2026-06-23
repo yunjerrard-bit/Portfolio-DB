@@ -86,13 +86,14 @@ def mock_pipeline_env(monkeypatch, tmp_path):
     import stocksig.main_run as main_run_mod
 
     monkeypatch.setattr(main_run_mod, "fetch_company_name", lambda t: t)
-    # WR-05: 인증 ping + 펀더멘털 fetch stub — freeze 검증에 외부 호출 0회 보장.
-    # (frozen panes 검증에 펀더멘털 불필요 → fetch_fundamentals 는 None 반환.)
+    # WR-05: 인증 ping stub — freeze 검증에 외부 호출 0회 보장.
     monkeypatch.setattr(main_run_mod, "ping_edgar", lambda: (True, None))
     monkeypatch.setattr(main_run_mod, "ping_dart", lambda: (True, None))
-    monkeypatch.setattr(
-        main_run_mod, "fetch_fundamentals", lambda t, m, lc, **kw: None
-    )
+    # Plan 10-02: 시트1 펀더멘털은 SYNC→READ(store) 경로로 이관됐다(구 fetch_fundamentals
+    # 바인딩 제거). 네트워크 0 보장은 SYNC 의 sync_ticker_history 를 stub 해 외부 probe/fetch
+    # 를 차단한다(격리 store 는 비어 있어 compute_matrix 빈 매트릭스 → 4셀 빈칸).
+    import stocksig.io.fundamentals_delta as _fd
+    monkeypatch.setattr(_fd, "sync_ticker_history", lambda ticker, source, **kw: None)
     yield
     # Windows: 캐시 파일 핸들 close 로 tmp_path 정리 실패 방지 (test_cache.py:25-33 패턴)
     for attr in ("_cache", "_name_cache"):

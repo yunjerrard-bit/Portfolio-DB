@@ -87,11 +87,13 @@ def mock_pipeline_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_mod, "ping_edgar", lambda: (True, None))
     monkeypatch.setattr(main_mod, "ping_dart", lambda: (True, None))
-    # WR-06: 펀더멘털 fetch stub — run() 경유 모든 테스트가 실 EDGAR/DART/Naver/yf
-    # 를 치지 않도록 None 반환(네트워크 0). 개별 테스트가 monkeypatch 로 재설정 가능.
-    monkeypatch.setattr(
-        main_mod, "fetch_fundamentals", lambda ticker, market, last_close, **kw: None
-    )
+    # Plan 10-02: 시트1 펀더멘털은 더 이상 main_run.fetch_fundamentals(구 경로)가 아니라
+    # SYNC(sync_ticker_history) → READ(compute_matrix store 읽기)로 산출된다. 구
+    # fetch_fundamentals stub 은 제거(해당 심볼 부재). 네트워크 0 보장은 SYNC 루프의
+    # sync_ticker_history 를 stub 해 외부 probe/fetch 를 차단한다(격리 store 는 비어 있어
+    # compute_matrix 는 빈 매트릭스 → 4셀 빈칸, 외부 호출 0).
+    import stocksig.io.fundamentals_delta as _fd
+    monkeypatch.setattr(_fd, "sync_ticker_history", lambda ticker, source, **kw: None)
     yield call_counter
 
 
@@ -387,31 +389,37 @@ def test_ping_failure_continues_and_builds_workbook(
     assert wb.sheetnames[0] == "시트1"
 
 
-def test_ping_failure_propagates_skip_edgar(
+def test_ping_failure_skips_edgar_sync_not_sheet1(
     mock_pipeline_env, tmp_path, env_file, monkeypatch
 ):
-    """ping 실패 시 US 종목 펀더멘털 fetch 에 skip_edgar=True 전달(클로저 경유)."""
+    """Plan 10-02(D-03/D-07/L7): EDGAR ping 실패 시 인증 skip 은 SYNC 루프에만 적용된다.
+
+    구 _fundamentals_with_auth 클로저(skip_edgar 를 fetch_fundamentals 에 전파)는 제거됐다.
+    이제 ping 실패는 SYNC(sync_ticker_history) 가 US 종목을 건너뛰게 할 뿐, 시트1 READ
+    경로(compute_matrix store 읽기)는 인증 무관하게 동작한다(L7). 따라서:
+      - EDGAR ping 실패 → US 종목 sync_ticker_history 호출 0 (SYNC skip)
+      - run() 은 정상 완료(시트1 산출물 존재) — 시트1 경로는 인증과 결합되지 않음
+    """
+    import stocksig.io.fundamentals_delta as _fd
     import stocksig.main_run as main_mod
 
     monkeypatch.setattr(main_mod, "ping_edgar", lambda: (False, "EDGAR 인증 실패"))
 
-    captured = {"calls": []}
+    sync_calls: list[tuple] = []
 
-    def _spy_fund(ticker, market, last_close, **kwargs):
-        # WR-06 보정: skip_edgar 전파(인자)만 검증하면 충분 — 원본 real fetch 로
-        # 위임하지 않고 None 반환(네트워크 0, fixture stub 무관 무한재귀/의도훼손 방지).
-        captured["calls"].append((ticker, market, kwargs.get("skip_edgar"), kwargs.get("skip_dart")))
-        return None
+    def _spy_sync(ticker, source, **kwargs):
+        sync_calls.append((ticker, source))
 
-    monkeypatch.setattr(main_mod, "fetch_fundamentals", _spy_fund)
+    monkeypatch.setattr(_fd, "sync_ticker_history", _spy_sync)
 
     tickers = tmp_path / "tickers.txt"
     tickers.write_text("AAPL\n", encoding="utf-8")
-    run(tickers, env_file, tmp_path / "output")
+    out = run(tickers, env_file, tmp_path / "output")
 
-    us_calls = [c for c in captured["calls"] if c[1] == "US"]
-    assert us_calls, f"US 펀더멘털 호출 없음: {captured['calls']}"
-    assert all(c[2] is True for c in us_calls), f"skip_edgar 전파 실패: {us_calls}"
+    # EDGAR 인증 실패 → US 종목(AAPL)은 SYNC 루프에서 skip → sync 호출 0 (L7).
+    assert not sync_calls, f"EDGAR 인증 실패 시 SYNC 가 호출되면 안 됨: {sync_calls}"
+    # 그럼에도 시트1 산출물은 정상 — 시트1 READ 경로는 인증 무관(L7).
+    assert out.exists()
 
 
 def test_summary_has_auth_line(mock_pipeline_env, tmp_path, env_file, caplog):
