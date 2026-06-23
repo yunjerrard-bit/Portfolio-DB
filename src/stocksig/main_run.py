@@ -381,12 +381,14 @@ def run(
         _auth_label(auth.edgar_ok, auth.edgar_note),
         _auth_label(auth.dart_ok, auth.dart_note),
     )
+    # Plan 10-03(FUND-11/L6): 구 펀더멘털 7일 캐시 제거 → 캐시 요약에서 펀더멘털
+    # HIT/MISS 토막과 그 통계 키 참조를 함께 정리(stats 에 해당 키 부재 → KeyError 방지).
+    # 단일 원천 호출 현황은 아래 "히스토리:" 델타 줄이 대표(RESEARCH Open Q2).
+    # OHLCV·기업명 캐시 줄은 유지.
     logger.info(
-        "캐시: OHLCV HIT %d/MISS %d · 펀더멘털 HIT %d/MISS %d · 기업명 HIT %d/MISS %d",
+        "캐시: OHLCV HIT %d/MISS %d · 기업명 HIT %d/MISS %d",
         stats["ohlcv_hit"],
         stats["ohlcv_miss"],
-        stats["fund_hit"],
-        stats["fund_miss"],
         stats["name_hit"],
         stats["name_miss"],
     )

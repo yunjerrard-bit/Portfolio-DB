@@ -293,14 +293,20 @@ def _seed_store_aapl() -> None:
 def test_run_no_legacy_fetch(
     mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
 ):
-    """FUND-11(위생): run() 시트1 경로에서 구 fetch(fetch_fundamentals/edgar_cached/
-    dart_cached) 호출 0 — 단일 원천(store/registry)으로 이관됨."""
+    """FUND-11(위생): 구 fetch 경로(fetch_fundamentals/fetch_edgar_cached/
+    fetch_dart_cached)가 Plan 10-03 에서 제거됐다 — 단일 원천(store/registry)으로 이관됨.
+
+    Plan 10-02 는 spy 호출 카운트 0 으로 "미호출"을 단언했다. Plan 10-03 이 죽은
+    코드를 제거하며 심볼 자체가 사라졌으므로, 호출 0 보다 강한 "심볼 부재"를
+    단언한다(구 경로 재유입 시 import 실패로 즉시 발각). run() 이 구 경로 없이
+    정상 산출하는지도 함께 확인한다.
+    """
+    assert not hasattr(fundamentals, "fetch_fundamentals")
+    assert not hasattr(edgar_client, "fetch_edgar_cached")
+    assert not hasattr(dart_client, "fetch_dart_cached")
+
     _setup_mock_yfinance(mocker, mock_ohlcv_df)
     _disable_history(mocker)  # SYNC 외부 호출 차단 (probe None → SKIP)
-
-    spy_fund = mocker.spy(fundamentals, "fetch_fundamentals")
-    spy_edgar = mocker.spy(edgar_client, "fetch_edgar_cached")
-    spy_dart = mocker.spy(dart_client, "fetch_dart_cached")
 
     tickers = tmp_tickers_file("AAPL\n")
     env = tmp_env_file(
@@ -309,11 +315,8 @@ def test_run_no_legacy_fetch(
 
     output_path = run(tickers, env, tmp_path / "output")
 
+    # 구 경로 없이도 시트1 산출 성공 (store/registry 읽기로 대체).
     assert output_path.exists()
-    # 시트1 경로 구 fetch 미호출 (단일 원천 — store/registry 읽기로 대체).
-    assert spy_fund.call_count == 0
-    assert spy_edgar.call_count == 0
-    assert spy_dart.call_count == 0
 
 
 def test_run_single_source(
@@ -327,10 +330,6 @@ def test_run_single_source(
     _setup_mock_yfinance(mocker, mock_ohlcv_df)
     _disable_history(mocker)  # sync 외부 호출 차단 — 이미 적재된 store 만 읽음
     _seed_store_aapl()
-
-    spy_fund = mocker.spy(fundamentals, "fetch_fundamentals")
-    spy_edgar = mocker.spy(edgar_client, "fetch_edgar_cached")
-    spy_dart = mocker.spy(dart_client, "fetch_dart_cached")
 
     # write_portfolio_sheet 인자로 전달된 results 의 res.fundamentals 를 캡처.
     spy_write = mocker.spy(
@@ -346,10 +345,10 @@ def test_run_single_source(
     output_path = run(tickers, env, tmp_path / "output")
 
     assert output_path.exists()
-    # 외부 펀더멘털 fetch 호출 0 (compute_matrix 는 SQLite SELECT 만).
-    assert spy_fund.call_count == 0
-    assert spy_edgar.call_count == 0
-    assert spy_dart.call_count == 0
+    # 구 fetch 경로는 Plan 10-03 에서 제거됨 (심볼 부재 = 외부 펀더멘털 fetch 0 구조 보장).
+    assert not hasattr(fundamentals, "fetch_fundamentals")
+    assert not hasattr(edgar_client, "fetch_edgar_cached")
+    assert not hasattr(dart_client, "fetch_dart_cached")
 
     # write_portfolio_sheet 가 받은 results 의 AAPL fundamentals 가 store 매트릭스에서 왔다.
     assert spy_write.call_count == 1

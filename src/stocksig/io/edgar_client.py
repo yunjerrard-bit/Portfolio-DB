@@ -1,7 +1,11 @@
-"""SEC EDGAR 펀더멘털 클라이언트 — EntityFacts typed accessor + set_identity + throttle + 7d cache.
+"""SEC EDGAR 펀더멘털 클라이언트 — EntityFacts typed accessor + set_identity + throttle.
 
 market.py 구조 복제: import-time singleton(set_identity 1회) + `@throttled_edgar`
-페치 + cache-first 페치 2함수. SPIKE-FINDINGS A1/A2/A7 확정 경로 사용.
+페치. SPIKE-FINDINGS A1/A2/A7 확정 경로 사용.
+
+Plan 10-03(FUND-11): 구 cache-first 페치 `fetch_edgar_cached`(7d `.cache/fundamentals`)는
+시트1 단일 원천 이관으로 호출자가 사라져 제거됐다. store 경로 per-quarter 추출기
+`fetch_edgar_quarterly_raw`(Phase 7)와 raw 추출기 `fetch_edgar_raw`는 유지된다.
 
 확정 취득 경로(edgartools 5.35.0, A1 — `facts.to_pandas()` 부재):
     facts = Company(ticker).get_facts()                  # EntityFacts
@@ -24,7 +28,6 @@ import os
 
 from edgar import Company, set_identity  # 주의: 패키지명 edgartools ≠ import 이름 edgar
 
-from stocksig.io import cache
 from stocksig.io.throttle import throttled_edgar
 
 logger = logging.getLogger(__name__)
@@ -251,13 +254,3 @@ def _instant_fallback(facts, field: str) -> list:
     if result is not None and hasattr(result, "numeric_value"):
         return [result]
     return []
-
-
-def fetch_edgar_cached(ticker: str, quarter_label: str) -> dict:
-    """cache-first 페치 (market.py L89-102 패턴). 7d TTL, 키 "EDGAR|ticker|quarter"."""
-    cached = cache.get_fund("EDGAR", ticker, quarter_label)
-    if cached is not None:
-        return cached
-    raw = fetch_edgar_raw(ticker)
-    cache.put_fund("EDGAR", ticker, quarter_label, raw)
-    return raw

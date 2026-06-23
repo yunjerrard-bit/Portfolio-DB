@@ -53,13 +53,15 @@ def _isolated_disk_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (AAPL 시트 2026-05-20 고정 + 합성 가격). autouse로 전 테스트에 강제 격리.
     개별 테스트의 자체 격리 픽스처는 이 위에 덮어써도 무방하다.
     """
+    # Plan 10-03(FUND-11): 구 펀더멘털 7일 캐시(_FUND_DIR/_fund_cache) 제거 →
+    # OHLCV·기업명 캐시만 격리. OHLCV/company 디렉터리·싱글톤은 무손상 유지.
     monkeypatch.setattr(_cache_mod, "_DEFAULT_DIR", tmp_path / ".cache" / "ohlcv")
     monkeypatch.setattr(_cache_mod, "_cache", None)
-    monkeypatch.setattr(_cache_mod, "_FUND_DIR", tmp_path / ".cache" / "fundamentals")
-    monkeypatch.setattr(_cache_mod, "_fund_cache", None)
+    monkeypatch.setattr(_cache_mod, "_NAME_DIR", tmp_path / ".cache" / "company")
+    monkeypatch.setattr(_cache_mod, "_name_cache", None)
     yield
     # Windows: diskcache 파일 핸들을 닫아야 tmp_path 정리가 실패하지 않는다.
-    for attr in ("_cache", "_fund_cache"):
+    for attr in ("_cache", "_name_cache"):
         c = getattr(_cache_mod, attr, None)
         if c is not None:
             try:

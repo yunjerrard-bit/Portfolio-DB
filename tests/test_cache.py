@@ -19,12 +19,12 @@ def _isolated_cache_dir(tmp_path, monkeypatch):
     target = tmp_path / "ohlcv"
     monkeypatch.setattr(cache_mod, "_DEFAULT_DIR", target)
     monkeypatch.setattr(cache_mod, "_cache", None)
-    fund_target = tmp_path / "fundamentals"
-    monkeypatch.setattr(cache_mod, "_FUND_DIR", fund_target)
-    monkeypatch.setattr(cache_mod, "_fund_cache", None)
+    name_target = tmp_path / "company"
+    monkeypatch.setattr(cache_mod, "_NAME_DIR", name_target)
+    monkeypatch.setattr(cache_mod, "_name_cache", None)
     yield
     # close caches to release file handles on Windows
-    for attr in ("_cache", "_fund_cache"):
+    for attr in ("_cache", "_name_cache"):
         c = getattr(cache_mod, attr)
         if c is not None:
             try:
@@ -89,48 +89,10 @@ def test_cache_logs_hit_miss_korean(caplog):
 
 
 # --- 펀더멘털 7일 TTL 캐시 (FUND-04) ---
-
-
-def test_make_fund_key_format():
-    assert cache_mod.make_fund_key("EDGAR", "AAPL", "2026Q3") == "EDGAR|AAPL|2026Q3"
-
-
-def test_fund_cache_dir_separate_from_ohlcv():
-    cache_mod._get_fund_cache()
-    assert cache_mod._FUND_DIR.exists()
-    assert cache_mod._FUND_DIR.is_dir()
-    # OHLCV 디렉터리와 분리
-    assert cache_mod._FUND_DIR != cache_mod._DEFAULT_DIR
-
-
-def test_fund_cache_put_get_roundtrip():
-    payload = {"PER": 28.5, "PEG": 1.2}
-    cache_mod.put_fund("EDGAR", "AAPL", "2026Q3", payload)
-    got = cache_mod.get_fund("EDGAR", "AAPL", "2026Q3")
-    assert got == payload
-
-
-def test_fund_cache_different_quarter_miss():
-    cache_mod.put_fund("EDGAR", "AAPL", "2026Q3", {"PER": 28.5})
-    assert cache_mod.get_fund("EDGAR", "AAPL", "2026Q2") is None
-
-
-def test_fund_cache_ttl_constant():
-    assert cache_mod._FUND_TTL_SECONDS == 7 * 24 * 60 * 60
-
-
-def test_fund_cache_hit_within_7d():
-    with freeze_time("2026-05-26 00:01:00") as frozen:
-        cache_mod.put_fund("DART", "005930", "2026Q1", {"OPM": 0.15})
-        frozen.tick(delta=pd.Timedelta(days=6, hours=23).to_pytimedelta())
-        assert cache_mod.get_fund("DART", "005930", "2026Q1") is not None
-
-
-def test_fund_cache_miss_after_7d():
-    with freeze_time("2026-05-26 00:01:00") as frozen:
-        cache_mod.put_fund("DART", "005930", "2026Q1", {"OPM": 0.15})
-        frozen.tick(delta=pd.Timedelta(days=7, hours=1).to_pytimedelta())
-        assert cache_mod.get_fund("DART", "005930", "2026Q1") is None
+# Plan 10-03(FUND-11): 구 펀더멘털 캐시(make_fund_key/get_fund/put_fund/_FUND_DIR/
+# _FUND_TTL_SECONDS/fund_hit/fund_miss)는 시트1 store/registry 단일 원천 이관으로
+# 호출자가 사라져 제거됐다. 관련 단위 테스트도 함께 제거. OHLCV·기업명 캐시
+# 테스트는 무손상 유지된다(D-05/L3 — 캐시 분리).
 
 
 # --- hit/miss 집계 카운터 (EXEC-04, lock 보호) ---
@@ -141,8 +103,6 @@ def test_reset_then_get_stats_all_zero():
     assert cache_mod.get_cache_stats() == {
         "ohlcv_hit": 0,
         "ohlcv_miss": 0,
-        "fund_hit": 0,
-        "fund_miss": 0,
         # 06-01 (COMPANY-04): 기업명 캐시 통계 키 추가 — reset 후 0 초기화.
         "name_hit": 0,
         "name_miss": 0,
@@ -157,16 +117,6 @@ def test_ohlcv_hit_miss_counted():
     stats = cache_mod.get_cache_stats()
     assert stats["ohlcv_hit"] == 1
     assert stats["ohlcv_miss"] == 1
-
-
-def test_fund_hit_miss_counted():
-    cache_mod.reset_cache_stats()
-    cache_mod.get_fund("EDGAR", "AAPL", "2026Q3")  # miss
-    cache_mod.put_fund("EDGAR", "AAPL", "2026Q3", {"PER": 1.0})
-    cache_mod.get_fund("EDGAR", "AAPL", "2026Q3")  # hit
-    stats = cache_mod.get_cache_stats()
-    assert stats["fund_hit"] == 1
-    assert stats["fund_miss"] == 1
 
 
 def test_get_stats_returns_copy():
@@ -191,10 +141,5 @@ def test_concurrent_get_ohlcv_counts_exact():
         list(ex.map(_call, range(n_calls)))
 
     stats = cache_mod.get_cache_stats()
-    total = (
-        stats["ohlcv_hit"]
-        + stats["ohlcv_miss"]
-        + stats["fund_hit"]
-        + stats["fund_miss"]
-    )
+    total = stats["ohlcv_hit"] + stats["ohlcv_miss"]
     assert total == n_calls, f"카운터 합계 {total} != 호출 {n_calls} (lost update)"

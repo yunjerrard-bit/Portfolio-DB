@@ -5,8 +5,11 @@
 pandas DataFrame). 만료는 24시간으로 고정. Phase 2 Wave 2의 `io.market`
 모듈이 Yahoo Finance 호출 전후로 사용.
 
-Phase 3에서 7일 TTL 펀더멘털 캐시(`.cache/fundamentals`, 키
-`"{SOURCE}|{TICKER}|{QUARTER}"`)를 동일 패턴으로 추가(OHLCV와 분리).
+기업명 캐시(`.cache/company`, 30일 TTL)도 동일 패턴으로 분리 추가(06-01).
+
+Plan 10-03(FUND-11): 구 7일 TTL 펀더멘털 캐시(`.cache/fundamentals` 디렉터리와
+그 키/조회/저장 헬퍼군)는 시트1이 store/registry 단일 원천으로 이관되며 호출자가
+사라져 제거됐다. OHLCV·기업명 캐시는 별개 디렉터리·헬퍼·통계 키로 무손상 유지된다.
 """
 from __future__ import annotations
 
@@ -33,8 +36,6 @@ _cache: Optional[Cache] = None
 _stats: dict[str, int] = {
     "ohlcv_hit": 0,
     "ohlcv_miss": 0,
-    "fund_hit": 0,
-    "fund_miss": 0,
     # 06-01 (COMPANY-04): 기업명 캐시 hit/miss. reset_cache_stats 가 자동 초기화 (for k in _stats).
     "name_hit": 0,
     "name_miss": 0,
@@ -42,10 +43,10 @@ _stats: dict[str, int] = {
 _stats_lock = threading.Lock()
 
 # --- 싱글톤 초기화 전용 lock (WR-04) ------------------------------------
-# _get_cache/_get_fund_cache/_get_name_cache 의 lazy 초기화를 double-checked
-# locking 으로 보호 — 동시 첫 호출에서도 단일 Cache 인스턴스만 생성해
-# 중복 diskcache 핸들(Windows 파일 핸들) 누수를 차단한다. _stats 카운터
-# lock(_stats_lock)과는 분리한다(서로 다른 임계영역).
+# _get_cache/_get_name_cache 의 lazy 초기화를 double-checked locking 으로
+# 보호 — 동시 첫 호출에서도 단일 Cache 인스턴스만 생성해 중복 diskcache
+# 핸들(Windows 파일 핸들) 누수를 차단한다. _stats 카운터 lock(_stats_lock)과는
+# 분리한다(서로 다른 임계영역).
 _cache_lock = threading.Lock()
 
 
@@ -103,54 +104,7 @@ def put_ohlcv(ticker: str, df) -> None:
     _get_cache().set(key, df, expire=_TTL_SECONDS)
 
 
-# --- 펀더멘털 캐시 (7일 TTL, OHLCV와 분리) -------------------------------
-
-_FUND_DIR = Path(".cache/fundamentals")
-_FUND_TTL_SECONDS = 7 * 24 * 60 * 60
-
-_fund_cache: Optional[Cache] = None
-
-
-def _get_fund_cache() -> Cache:
-    global _fund_cache
-    if _fund_cache is None:  # fast-path (lock 없음)
-        with _cache_lock:
-            if _fund_cache is None:  # double-checked
-                _FUND_DIR.mkdir(parents=True, exist_ok=True)
-                _fund_cache = Cache(str(_FUND_DIR))
-    return _fund_cache
-
-
-def make_fund_key(source: str, ticker: str, quarter_label: str) -> str:
-    """펀더멘털 캐시 키: `"{SOURCE}|{TICKER}|{QUARTER}"` (예: ``"EDGAR|AAPL|2026Q3"``)."""
-    return f"{source}|{ticker}|{quarter_label}"
-
-
-def get_fund(source: str, ticker: str, quarter_label: str):
-    """펀더멘털 캐시 조회. 히트시 객체 반환, 미스시 None.
-
-    HIT/MISS 로그는 한국어 + 영문 substring(`cache HIT`/`cache MISS`)을 동시 포함.
-    """
-    key = make_fund_key(source, ticker, quarter_label)
-    value = _get_fund_cache().get(key)
-    if value is not None:
-        logger.info("%s | 펀더멘털 캐시 HIT (cache HIT, key=%s)", ticker, key)
-        with _stats_lock:
-            _stats["fund_hit"] += 1
-    else:
-        logger.info("%s | 펀더멘털 캐시 MISS (cache MISS, key=%s)", ticker, key)
-        with _stats_lock:
-            _stats["fund_miss"] += 1
-    return value
-
-
-def put_fund(source: str, ticker: str, quarter_label: str, value) -> None:
-    """펀더멘털 캐시 저장. 만료 7일."""
-    key = make_fund_key(source, ticker, quarter_label)
-    _get_fund_cache().set(key, value, expire=_FUND_TTL_SECONDS)
-
-
-# --- 기업명 캐시 (30일 TTL, OHLCV/펀더멘털과 분리) -----------------------
+# --- 기업명 캐시 (30일 TTL, OHLCV와 분리) --------------------------------
 # 06-01 (COMPANY-04): 기업명은 안정적이므로 30일 TTL. 재실행 시 HIT → yfinance 무호출.
 
 _NAME_DIR = Path(".cache/company")

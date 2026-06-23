@@ -1,8 +1,11 @@
-"""Phase 3 Wave 3 (03-03 Task 2): edgar_client.py — EDGAR facts + set_identity + throttle + cache.
+"""Phase 3 Wave 3 (03-03 Task 2): edgar_client.py — EDGAR facts + set_identity + throttle.
 
 `mocker.patch("stocksig.io.edgar_client.Company")` 로 외부 호출 차단(test_market.py L33 analog),
-edgar_aapl_facts fixture 로 fetch_edgar_raw 산출 dict 단언. set_identity 호출 형식(FUND-02),
-cache HIT 시 재호출 0(mock call_count==1) 단언.
+edgar_aapl_facts fixture 로 fetch_edgar_raw 산출 dict 단언. set_identity 호출 형식(FUND-02).
+
+Plan 10-03(FUND-11): 구 cache-first 페치 `fetch_edgar_cached`(7d `.cache/fundamentals`)가
+제거되며 cache HIT 재호출 테스트·`_isolated_fund_cache` 픽스처도 함께 제거됐다.
+`fetch_edgar_raw`·`fetch_edgar_quarterly_raw`(store 경로) 테스트는 무손상 유지.
 
 SPIKE-FINDINGS A1/A2 확정 경로:
   facts = Company(tk).get_facts()
@@ -15,9 +18,6 @@ SPIKE-FINDINGS A1/A2 확정 경로:
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-from diskcache import Cache
 
 from fixtures.edgar_aapl_facts import (
     AAPL_ANNUAL,
@@ -105,29 +105,3 @@ def test_fetch_edgar_raw_gross_profit_none(mocker):
 
     raw = fetch_edgar_raw("GOOGL")
     assert raw["gross_profit"] is None
-
-
-@pytest.fixture
-def _isolated_fund_cache(tmp_path, monkeypatch):
-    """get_fund/put_fund 가 tmp 디렉터리를 쓰도록 격리."""
-    from stocksig.io import cache as cache_mod
-
-    fund_cache = Cache(str(tmp_path / "fund"))
-    monkeypatch.setattr(cache_mod, "_get_fund_cache", lambda: fund_cache)
-    yield fund_cache
-    fund_cache.close()
-
-
-def test_fetch_edgar_cached_hit(mocker, _isolated_fund_cache):
-    # cache HIT 경로: 같은 (EDGAR,ticker,quarter) 2회 호출 시 fetch_edgar_raw 1회만.
-    import stocksig.io.edgar_client as ec
-
-    mock_company = mocker.patch("stocksig.io.edgar_client.Company")
-    mock_company.return_value.get_facts.return_value = _build_fake_facts()
-    spy = mocker.spy(ec, "fetch_edgar_raw")
-
-    first = ec.fetch_edgar_cached("AAPL", "2026Q2")
-    second = ec.fetch_edgar_cached("AAPL", "2026Q2")
-
-    assert first == second
-    assert spy.call_count == 1  # 2회차는 캐시 HIT

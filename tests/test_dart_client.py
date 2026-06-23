@@ -1,9 +1,13 @@
-"""Phase 3 Wave 4 (03-04 Task 1): dart_client.py — DART finstate_all + account 매핑 + throttle + cache.
+"""Phase 3 Wave 4 (03-04 Task 1): dart_client.py — DART finstate_all + account 매핑 + throttle.
 
 `mocker.patch("stocksig.io.dart_client.OpenDartReader")` 로 외부 호출 차단(test_edgar_client.py
 analog), dart_005930_finstate fixture(DataFrame 재구성)로 fetch_dart_raw 산출 dict 단언.
 account_id 1차 / account_nm 2차 매핑(A3), thstrm_amount 쉼표 int 파싱(T-03-10),
-status 가드(000/013/020), stock_code 직접 수용(.KS 제거, A6), cache HIT 재호출 0 단언.
+status 가드(000/013/020), stock_code 직접 수용(.KS 제거, A6).
+
+Plan 10-03(FUND-11): 구 cache-first 페치 `fetch_dart_cached`(7d `.cache/fundamentals`)가
+제거되며 cache HIT 재호출 테스트·`_isolated_fund_cache` 픽스처도 함께 제거됐다.
+`fetch_dart_raw`·`fetch_dart_quarterly_raw`(store 경로) 테스트는 무손상 유지.
 
 SPIKE-FINDINGS A3/A6 확정 경로:
   dart = OpenDartReader(api_key)
@@ -17,8 +21,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-import pytest
-from diskcache import Cache
 
 from fixtures.dart_005930_finstate import COLUMNS, EXPECTED_VALUES, IS_CIS_ROWS
 
@@ -163,27 +165,3 @@ def test_fetch_dart_raw_empty_df(mocker):
     assert raw.get("note")
 
 
-@pytest.fixture
-def _isolated_fund_cache(tmp_path, monkeypatch):
-    """get_fund/put_fund 가 tmp 디렉터리를 쓰도록 격리."""
-    from stocksig.io import cache as cache_mod
-
-    fund_cache = Cache(str(tmp_path / "fund"))
-    monkeypatch.setattr(cache_mod, "_get_fund_cache", lambda: fund_cache)
-    yield fund_cache
-    fund_cache.close()
-
-
-def test_fetch_dart_cached_hit(mocker, _isolated_fund_cache):
-    # cache HIT: 같은 (DART,ticker,quarter) 2회 호출 시 finstate_all 1회만.
-    from stocksig.io import dart_client
-
-    mock_cls = mocker.patch("stocksig.io.dart_client.OpenDartReader")
-    mock_cls.return_value.finstate_all.return_value = _fixture_df()
-    mocker.patch("stocksig.io.dart_client._resolve_api_key", return_value="DUMMY")
-
-    first = dart_client.fetch_dart_cached("005930", "2025-11011")
-    second = dart_client.fetch_dart_cached("005930", "2025-11011")
-
-    assert first == second
-    assert mock_cls.return_value.finstate_all.call_count == 1  # 2회차 캐시 HIT

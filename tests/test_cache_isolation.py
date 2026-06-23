@@ -14,9 +14,12 @@ import stocksig.io.cache as cache_mod
 
 
 def test_default_dirs_redirected_away_from_project_cache():
-    """autouse 격리 픽스처가 운영 상대경로 기본값을 덮어썼는지 확인."""
+    """autouse 격리 픽스처가 운영 상대경로 기본값을 덮어썼는지 확인.
+
+    Plan 10-03(FUND-11): 구 `.cache/fundamentals` 캐시 제거 → OHLCV·기업명 격리만 단언.
+    """
     assert cache_mod._DEFAULT_DIR != Path(".cache/ohlcv")
-    assert cache_mod._FUND_DIR != Path(".cache/fundamentals")
+    assert cache_mod._NAME_DIR != Path(".cache/company")
 
 
 def test_put_ohlcv_does_not_touch_project_cache(mock_ohlcv_df):

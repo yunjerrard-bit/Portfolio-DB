@@ -1,7 +1,11 @@
-"""OpenDART 한국 펀더멘털 클라이언트 — finstate_all + account 매핑 + throttle + 7d cache.
+"""OpenDART 한국 펀더멘털 클라이언트 — finstate_all + account 매핑 + throttle.
 
-market.py / edgar_client.py 구조 복제: `@throttled_dart`(2 RPS) 페치 + cache-first 페치
-2함수. SPIKE-FINDINGS A3/A6 확정 경로 사용.
+market.py / edgar_client.py 구조 복제: `@throttled_dart`(2 RPS) 페치.
+SPIKE-FINDINGS A3/A6 확정 경로 사용.
+
+Plan 10-03(FUND-11): 구 cache-first 페치 `fetch_dart_cached`(7d `.cache/fundamentals`)는
+시트1 단일 원천 이관으로 호출자가 사라져 제거됐다. store 경로 per-quarter 추출기
+`fetch_dart_quarterly_raw`(Phase 7)와 raw 추출기 `fetch_dart_raw`는 유지된다.
 
 확정 취득 경로(OpenDartReader 0.3.x, A6 — 6자리 stock_code 직접 수용):
     dart = OpenDartReader(api_key)                          # corp_code 내부 해석
@@ -28,7 +32,6 @@ import threading
 import pandas as pd
 from opendartreader import OpenDartReader  # 주의: import 소문자 opendartreader, 클래스 OpenDartReader (A6)
 
-from stocksig.io import cache
 from stocksig.io.dart_account_map import (
     DART_ACCOUNT_ID_MAP,
     DART_ACCOUNT_MAP,
@@ -294,18 +297,3 @@ def fetch_dart_quarterly_raw(ticker: str, years: int = 3) -> list[dict]:
 
     logger.info("%s | DART 분기 백필 추출 완료 (%d행, 최근 %d년)", ticker, len(rows), years)
     return rows
-
-
-def fetch_dart_cached(ticker: str, quarter_label: str) -> dict:
-    """cache-first 페치 (market.py L89-102 패턴). 7d TTL, 키 "DART|ticker|quarter".
-
-    quarter_label 은 "{bsns_year}-{reprt_code}" (예 "2025-11011", A7).
-    bsns_year 를 파싱해 finstate_all year 인자로 전달.
-    """
-    cached = cache.get_fund("DART", ticker, quarter_label)
-    if cached is not None:
-        return cached
-    year = int(quarter_label.split("-")[0])
-    raw = fetch_dart_raw(ticker, year)
-    cache.put_fund("DART", ticker, quarter_label, raw)
-    return raw
