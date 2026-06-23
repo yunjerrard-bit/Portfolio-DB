@@ -416,3 +416,64 @@ def test_peg_sanity_bounds():
     cell = me.compute_peg_cell(per_value=100.0, eps_ttm=10.1, eps_prior=10.0)
     assert cell.value is None
     assert "sanity" in (cell.note or "")
+
+
+# --- Plan 10-01 Task 1: 단일분기 가격 주입 공유 코어 (D-06) -----------------
+
+
+def test_inject_prices_for_quarter():
+    """단일 분기 q·가격 주입 → 가격 의존 4종 + PEG in-place 채움 (시트1·트렌드 공유 코어).
+
+    PER/PBR/PCR/PSR = price_ratio(분모 주당 셀, price), PEG = compute_peg_cell(
+    PER.value, eps_now, eps_prior(4분기 전)). 시트1·트렌드가 동일 코드·동일 입력을
+    써서 드리프트가 구조적으로 차단됨(D-06).
+    """
+    rows = [
+        # EPS_ttm 현재(2026Q1): 2025Q2~2026Q1 net_income TTM (성장).
+        raw_row(quarter="2025Q2", field="net_income", value=120.0),
+        raw_row(quarter="2025Q3", field="net_income", value=120.0),
+        raw_row(quarter="2025Q4", field="net_income", value=120.0),
+        raw_row(quarter="2026Q1", field="net_income", value=120.0),
+        # EPS_ttm 4분기전(2025Q1): 2024Q2~2025Q1 net_income TTM.
+        raw_row(quarter="2024Q2", field="net_income", value=100.0),
+        raw_row(quarter="2024Q3", field="net_income", value=100.0),
+        raw_row(quarter="2024Q4", field="net_income", value=100.0),
+        raw_row(quarter="2025Q1", field="net_income", value=100.0),
+        raw_row(quarter="2025Q1", field="shares_outstanding", value=100.0,
+                period_type="instant"),
+        raw_row(quarter="2026Q1", field="shares_outstanding", value=100.0,
+                period_type="instant"),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+
+    latest_q = "2026Q1"
+    eps_map = matrix["EPS_ttm"]
+    # 가격 주입 전: PER/PEG는 빈 셀(가격 의존 / 파생).
+    assert matrix["PER"][latest_q].value is None
+
+    me.inject_prices_for_quarter(matrix, latest_q, 48.0, eps_map)
+
+    # EPS_ttm 현재 4.8 → PER = 48 / 4.8 = 10.0.
+    assert matrix["PER"][latest_q].value == pytest.approx(10.0)
+    # 성장률 = (4.8/4.0 − 1)×100 = 20% → PEG = 10.0/20 = 0.5.
+    assert matrix["PEG"][latest_q].value == pytest.approx(0.5)
+
+
+def test_inject_prices_for_quarter_price_none():
+    """price=None(가격 결손) → 가격 의존 4종 빈 셀, PEG value None."""
+    rows = [
+        raw_row(quarter="2025Q2", field="net_income", value=120.0),
+        raw_row(quarter="2025Q3", field="net_income", value=120.0),
+        raw_row(quarter="2025Q4", field="net_income", value=120.0),
+        raw_row(quarter="2026Q1", field="net_income", value=120.0),
+        raw_row(quarter="2026Q1", field="shares_outstanding", value=100.0,
+                period_type="instant"),
+    ]
+    matrix = me.compute_matrix("AAPL", fetch_fn=lambda t: [_to_fetch_row(r) for r in rows])
+    eps_map = matrix["EPS_ttm"]
+
+    me.inject_prices_for_quarter(matrix, "2026Q1", None, eps_map)
+
+    for metric in ("PER", "PBR", "PCR", "PSR"):
+        assert matrix[metric]["2026Q1"].value is None, f"{metric} 가격 결손 → 빈 셀"
+    assert matrix["PEG"]["2026Q1"].value is None
