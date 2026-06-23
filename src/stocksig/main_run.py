@@ -46,8 +46,9 @@ from stocksig.io import cache, fundamentals_delta, naver_scraper
 from stocksig.io import fundamentals_store as fund_store
 from stocksig.io.auth_check import AuthStatus, ping_dart, ping_edgar
 from stocksig.io.company import fetch_company_name
-from stocksig.io.fundamentals import fetch_fundamentals
+from stocksig.io.fundamentals_view import matrix_to_fundamentals
 from stocksig.io.input import read_tickers_extended
+from stocksig.io.metrics_engine import compute_matrix, inject_prices_for_quarter
 from stocksig.io.market import fetch_ohlcv_cached
 from stocksig.io.market_kind import classify_market
 from stocksig.output.sheet_per_ticker import write_sheet_for_ticker
@@ -267,28 +268,70 @@ def run(
     if "KR" in markets:
         auth.dart_ok, auth.dart_note = ping_dart()
 
-    # PASS 1b: 인증 실패 소스의 1차 펀더멘털 호출만 스킵하는 클로저 주입.
-    # yf/Naver 폴백은 독립 소스이므로 유지된다(A4 확정).
-    def _fundamentals_with_auth(ticker, market, last_close):
-        return fetch_fundamentals(
-            ticker,
-            market,
-            last_close,
-            skip_edgar=(market == "US" and auth.edgar_ok is False),
-            skip_dart=(market == "KR" and auth.dart_ok is False),
-        )
-
-    # PASS 1 — fan-out (+ PASS 1b: 인증 배선된 펀더멘털 클로저 주입)
+    # PASS 1 — fan-out (시세·기업명만, FUND-11/D-01/D-03).
+    # 펀더멘털은 더 이상 PASS1 fetch 로 산출하지 않는다 — SYNC(DB 적재) 이후 READ 단계가
+    # store(compute_matrix)에서 단일 원천으로 읽어 res.fundamentals 를 재할당한다.
+    # fundamentals_fn=None → runner.py:147 하위호환(fundamentals=None, READ 가 채움).
     pipeline = _make_pipeline()
     results, failures = run_all(
         specs,
         classify_market,
         pipeline,
-        fundamentals_fn=_fundamentals_with_auth,
+        fundamentals_fn=None,
         company_name_fn=fetch_company_name,  # 06-01: 시트1 B열 기업명 (캐시 우선)
     )
 
-    # PASS 2 — write
+    # SYNC — 히스토리 store 적재 (FUND-11/D-01: 시트1 store 읽기 전에 DB 를 채운다).
+    # 종목별 probe(접수번호)로 델타가 없으면 외부 전체호출 0(평소 ≈0, SC3), 델타 시에만
+    # 누적한다. 인증 실패 소스는 여기(SYNC)서만 스킵한다 — store 읽기(READ)는 인증 무관
+    # 하므로 skip 을 적용하지 않는다(L7). yf/Naver 전용 폴백 종목은 접수번호 개념이 없어
+    # 대상 외(deferred). 종목별 try/except 로 히스토리 실패가 시트1 산출을 깨지 않게 흡수.
+    for s in specs:
+        market = classify_market(s.symbol)
+        if market == "US":
+            source = "EDGAR"
+            if auth.edgar_ok is False:
+                continue  # 인증 실패 소스 스킵 (probe도 실패할 것)
+        elif market == "KR":
+            source = "DART"
+            if auth.dart_ok is False:
+                continue
+        else:
+            continue  # EDGAR/DART 외 소스는 접수번호 델타 대상 아님 (deferred)
+        try:
+            fundamentals_delta.sync_ticker_history(s.symbol, source)
+        except Exception as exc:  # noqa: BLE001 — 히스토리 경로 실패가 시트1을 깨지 않게
+            # T-04-03 / T-07-12: 예외 타입명만 로그 (API 키·예외 원문 미포함).
+            logger.warning(
+                "%s | 히스토리 경로 실패(%s) — 시트1 산출물은 영향 없음",
+                s.symbol, type(exc).__name__,
+            )
+
+    # READ — 시트1 펀더멘털 단일 원천 읽기 (FUND-11/D-01/D-07/D-08, L1 호출순서).
+    # SYNC 로 적재된 store 를 compute_matrix(외부 호출 0, SQLite SELECT)로 읽고, 시트1이
+    # 보유한 OHLCV last_close(runner.py:100 동일 경로 — L4 동일성)를 최신 분기에 주입한 뒤,
+    # 어댑터로 res.fundamentals 를 재할당한다(TickerResult frozen 아님). store 읽기는 인증
+    # 무관이므로 skip_edgar/skip_dart 를 적용하지 않는다(L7). 종목별 try/except 로 펀더멘털
+    # 결손이 티커 실패가 되지 않게 흡수(예외 타입명만 로깅, CR-01·T-04-03).
+    for res in results:
+        sym = res.spec.symbol
+        try:
+            matrix = compute_matrix(sym)
+            quarters = sorted({q for cells in matrix.values() for q in cells})
+            latest_q = quarters[-1] if quarters else None
+            last_close = res.enriched_df.iloc[-1].get("Close")
+            if latest_q is not None:
+                inject_prices_for_quarter(
+                    matrix, latest_q, last_close, matrix.get("EPS_ttm", {})
+                )
+            res.fundamentals = matrix_to_fundamentals(matrix, latest_q)
+        except Exception as exc:  # noqa: BLE001 — 펀더멘털 결손 ≠ 티커 실패 (D-disc-10)
+            # T-04-03: 예외 타입명만 로그 (API 키·예외 원문 미포함).
+            logger.warning(
+                "%s | 펀더멘털 store 읽기 예외 흡수: %s", sym, type(exc).__name__
+            )
+
+    # PASS 2 — write (시트1 은 SYNC→READ 로 채워진 store 펀더멘털을 무변경 소비)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / f"portfolio_{date.today():%Y%m%d}.xlsx"
@@ -323,34 +366,6 @@ def run(
         logger.warning(
             "실패 %d개 — 시트1에 표시됨: %s", len(failures), failed_syms
         )
-
-    # FUND-07/08 (D-07): 히스토리 경로 — 시트1 경로(PASS1/PASS2, D-06 불변)와 완전
-    # 분리된 별도 순차 루프. PASS2 write(wb.close) 이후·요약 직전에 실행하므로
-    # 히스토리 경로가 실패해도 시트1 산출물(portfolio_*.xlsx, 이미 저장됨)은 안전하다.
-    # 종목별 probe(접수번호)로 델타가 없으면 외부 전체호출 0(평소 ≈0, SC3), 델타 시에만
-    # 누적한다. 인증 실패 소스는 스킵하고, yf/Naver 전용 폴백 종목은 접수번호 개념이
-    # 없어 대상 외(deferred). 분기 경계에서 시트1 fetch와 히스토리 probe/fetch가 같은
-    # 종목에 이중 외부 호출될 수 있으나 드문 이벤트·시트1 회귀 위험 0이므로 허용(D-07).
-    for s in specs:
-        market = classify_market(s.symbol)
-        if market == "US":
-            source = "EDGAR"
-            if auth.edgar_ok is False:
-                continue  # 인증 실패 소스 스킵 (probe도 실패할 것)
-        elif market == "KR":
-            source = "DART"
-            if auth.dart_ok is False:
-                continue
-        else:
-            continue  # EDGAR/DART 외 소스는 접수번호 델타 대상 아님 (deferred)
-        try:
-            fundamentals_delta.sync_ticker_history(s.symbol, source)
-        except Exception as exc:  # noqa: BLE001 — 히스토리 경로 실패가 시트1을 깨지 않게
-            # T-04-03 / T-07-12: 예외 타입명만 로그 (API 키·예외 원문 미포함).
-            logger.warning(
-                "%s | 히스토리 경로 실패(%s) — 시트1 산출물은 영향 없음",
-                s.symbol, type(exc).__name__,
-            )
 
     # EXEC-04 / 로드맵 SC3 — 한국어 최종 실행 요약 블록 (콘솔/로그파일).
     # 카운트(정수)·티커 심볼만 출력 (T-04-01: API 키·예외 원문 미포함).
