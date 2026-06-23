@@ -1,0 +1,26 @@
+# ticker  tier  industry
+AAPL 1티어 빅테크
+GEV	1티어	에너지/전력/재생에너지
+PFE	배당B	헬스/제약
+PLTR	1티어	테크/방산
+PLUG	3티어	에너지/인프라/수소에너지
+PNR	2티어	물/산업재/수처리
+PR	배당B	에너지/석유
+PSKY	3티어	콘텐츠
+PSNY	3티어	모빌/전기차
+PWR	1티어	에너지인프라/인프라1위
+RBLX	3티어	콘텐츠/게임
+REI	3티어	에너지/석유
+RIVN	3티어	모빌/전기차
+SCHD	배당A	ETF/배당
+SGOV	채권	초단기국채
+SIL	Hedge	ETF/원자재/은광산
+SIRI	3티어	콘텐츠/위성라디오
+SNDK	3티어	테크/AI인프라/SSD
+005930.KS 2티어 반도체
+011070.KS 2티어 반도체기판/로봇
+BTC-USD Hedge 코인
+ETH-USD Hedge 코인
+^KS11 2티어 지수
+^SPX 1티어 지수
+ZZZZZ
