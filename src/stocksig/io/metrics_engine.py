@@ -63,6 +63,15 @@ _STOCK_FIELDS: frozenset[str] = frozenset(
     {"total_equity", "total_assets", "total_liabilities", "shares_outstanding"}
 )
 
+# 매트릭스에 가격을 주입해 채울 가격 의존 4종 → 주당 분모 metric (D-07 price_denominator).
+# REGISTRY 단일 도출 — 시트1·트렌드 공유 코어(inject_prices_for_quarter)와 history_render
+# 가 함께 참조한다(사본·드리프트 0). history_render 가 이 상수를 import 재사용한다.
+_PRICE_DEPENDENT: dict[str, str] = {
+    m.name: m.price_denominator
+    for m in REGISTRY
+    if m.price_denominator is not None
+}
+
 
 # --- 캘린더 분기 산술 (Pitfall 5 경계 정확) ---------------------------------
 
@@ -296,6 +305,45 @@ def compute_peg_cell(
     return cell
 
 
+def inject_prices_for_quarter(
+    matrix: dict,
+    q: str,
+    price: float | None,
+    eps_map: dict,
+) -> None:
+    """단일 분기 q에 가격 의존 4종 + PEG in-place 주입 (시트1·트렌드 공유 코어, D-06).
+
+    `history_render._inject_prices`(다분기 루프)와 시트1(최신 분기 1열, Plan 02/03)이
+    **동일 코드·동일 입력**을 호출해 두 산출물 값 드리프트를 구조적으로 차단한다(D-06).
+
+    동작:
+      (a) 가격 의존 4종(PER/PBR/PCR/PSR) = `price_ratio(matrix[denom][q], price)` 주입.
+      (b) PEG 3단 계약 = `compute_peg_cell(PER.value, eps_now, eps_prior(4분기 전))`.
+
+    신규 산식 0 — `price_ratio`/`compute_peg_cell`/`_calendar_quarter_offset` 재사용.
+    price 결손 시 4종·PEG 모두 빈 셀+사유로 자연 처리(price_ratio/compute_peg_cell 게이트).
+
+    인자:
+      matrix:  compute_matrix 반환 `{metric: {quarter: MetricCell}}` (in-place 변형).
+      q:       대상 분기 "YYYYQn".
+      price:   주입 가격(시트1=last_close, 트렌드=분기말 종가 / 최신=현재가).
+      eps_map: `matrix["EPS_ttm"]` ({quarter: MetricCell}).
+    """
+    # (a) 가격 의존 4종 — 분모 per-share 셀에 가격 주입.
+    for metric, denom in _PRICE_DEPENDENT.items():
+        denom_cell = matrix.get(denom, {}).get(q)
+        matrix.setdefault(metric, {})[q] = price_ratio(denom_cell, price)
+
+    # (b) 분기별 PEG (3단 계약, D-10) — PER 가격 주입 후 EPS 성장률.
+    per = matrix.get("PER", {}).get(q)
+    per_value = per.value if per is not None else None
+    eps_now = eps_map.get(q)
+    eps_now_v = eps_now.value if eps_now is not None else None
+    eps_prior = eps_map.get(_calendar_quarter_offset(q, -4))
+    eps_prior_v = eps_prior.value if eps_prior is not None else None
+    matrix.setdefault("PEG", {})[q] = compute_peg_cell(per_value, eps_now_v, eps_prior_v)
+
+
 def compute_matrix(
     ticker: str,
     fetch_fn: Callable[[str], list[tuple]] = fetch_raw_quarters,
@@ -342,7 +390,9 @@ __all__ = [
     "compute_matrix",
     "compute_cell",
     "compute_peg_cell",
+    "inject_prices_for_quarter",
     "price_ratio",
+    "_PRICE_DEPENDENT",
     "_normalize_quarters",
     "_recent",
     "_ttm_sum",

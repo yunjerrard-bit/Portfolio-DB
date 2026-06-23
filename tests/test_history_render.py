@@ -22,7 +22,7 @@ from stocksig.io.metrics_engine import (
     compute_peg_cell,
     price_ratio,
 )
-from tests.fixtures.history_fixtures import (
+from fixtures.history_fixtures import (
     TICKER_INDUSTRY,
     build_ohlcv,
     fetch_fn_stub,

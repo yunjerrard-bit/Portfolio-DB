@@ -26,20 +26,12 @@ from pathlib import Path
 
 from stocksig.io.metrics_engine import (
     _calendar_quarter_offset,
+    _PRICE_DEPENDENT,  # noqa: F401 (하위호환 재수출 — 기존 import 경로 보존)
     compute_matrix,
-    compute_peg_cell,
-    price_ratio,
+    inject_prices_for_quarter,
 )
-from stocksig.io.metrics_registry import REGISTRY
 
 logger = logging.getLogger("history_render")
-
-# 매트릭스에 가격을 주입해 채울 가격 의존 4종 → 분모 metric (D-07 price_denominator).
-_PRICE_DEPENDENT: dict[str, str] = {
-    m.name: m.price_denominator
-    for m in REGISTRY
-    if m.price_denominator is not None
-}
 
 # 시트1·종목시트 흐름과의 결손 게이트 공유(신규 정의 0).
 from stocksig.io.fundamentals import _is_missing  # noqa: E402 (지표 lookup 가드)
@@ -72,26 +64,14 @@ def _inject_prices(matrix: dict, quarters: list[str], qmap: dict, current: float
     """가격 의존 4종 price_ratio 주입 + 분기별 PEG compute_peg_cell(D-09/10) — in-place.
 
     분기별 가격: 최신 분기 = 현재가, 그 외 = 분기말 종가(qmap.get, Pitfall 2 .get 가드).
-    PEG = compute_peg_cell(PER.value, EPS_now, EPS_prior(4분기 전)).
+    분기 루프 본문은 시트1·트렌드 **공유 코어** `inject_prices_for_quarter`(metrics_engine,
+    D-06)로 위임한다 — 시그니처·외부 동작(matrix in-place, quarters/qmap/current/latest_q)은
+    유지. 두 산출물이 동일 코드·동일 입력을 써 값 드리프트가 구조적으로 차단된다.
     """
     eps_map = matrix.get("EPS_ttm", {})
     for q in quarters:
         price = current if (latest_q is not None and q == latest_q) else qmap.get(q)
-
-        # (a) 가격 의존 4종 — 분모 per-share 셀에 가격 주입.
-        for metric, denom in _PRICE_DEPENDENT.items():
-            denom_cell = matrix.get(denom, {}).get(q)
-            matrix.setdefault(metric, {})[q] = price_ratio(denom_cell, price)
-
-        # (b) 분기별 PEG (3단 계약, D-10) — PER 가격 주입 후 EPS 성장률.
-        per = matrix.get("PER", {}).get(q)
-        per_value = per.value if per is not None else None
-        eps_now = eps_map.get(q)
-        eps_now_v = eps_now.value if eps_now is not None else None
-        qp = _calendar_quarter_offset(q, -4)
-        eps_prior = eps_map.get(qp)
-        eps_prior_v = eps_prior.value if eps_prior is not None else None
-        matrix.setdefault("PEG", {})[q] = compute_peg_cell(per_value, eps_now_v, eps_prior_v)
+        inject_prices_for_quarter(matrix, q, price, eps_map)
 
 
 def run_history(tickers_path: str, output_dir: str) -> Path | None:
