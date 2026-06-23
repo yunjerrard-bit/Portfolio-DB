@@ -27,7 +27,9 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
+from stocksig.io import dart_client
 from stocksig.io import edgar_client
+from stocksig.io import fundamentals
 from stocksig.io import fundamentals_delta as fd
 from stocksig.io import fundamentals_store as fs
 from stocksig.main import run
@@ -250,3 +252,114 @@ def test_history_failure_does_not_break_sheet1(
     wb = openpyxl.load_workbook(output_path)
     assert "시트1" in wb.sheetnames
     assert "AAPL" in wb.sheetnames
+
+
+# --- Plan 10-02 Task 2: 단일 원천·외부 호출 0 (FUND-11) ----------------------
+
+# 12-tuple raw_facts 행 = (ticker, source, quarter, field, value, unit,
+#   accession, period_start, period_end, period_type, reprt_code, fetched_at).
+# upsert_quarters 가 받는 형태(fundamentals_store.upsert_quarters docstring L126).
+def _store_row(quarter: str, field: str, value: float, period_type: str) -> tuple:
+    return (
+        "AAPL", "EDGAR", quarter, field, value, "USD",
+        "ACC-SEED", "2026-01-01", "2026-03-31", period_type, None, "2026-01-01T00:00:00",
+    )
+
+
+def _seed_store_aapl() -> None:
+    """compute_matrix 가 PER/GPM/OPM 최신열을 산출하도록 격리 store 에 raw 5분기 적재.
+
+    history_fixtures._series_rows 와 동일 지표 구성(revenue/gross_profit/operating_income/
+    net_income/total_equity/total_assets/shares_outstanding)을 12-tuple 로 직접 upsert —
+    compute_matrix("AAPL") 가 외부 호출 0(SQLite SELECT)로 매트릭스를 만든다.
+    """
+    quarters = ["2025Q1", "2025Q2", "2025Q3", "2025Q4", "2026Q1"]
+    rows: list[tuple] = []
+    for i, q in enumerate(quarters):
+        scale = 1.0 + 0.1 * i
+        rows += [
+            _store_row(q, "revenue", 1000.0 * scale, "duration"),
+            _store_row(q, "gross_profit", 400.0 * scale, "duration"),
+            # OPM 은 REGISTRY 상 store field 명이 "op_income" (metrics_registry.py:82).
+            _store_row(q, "op_income", 300.0 * scale, "duration"),
+            _store_row(q, "net_income", 250.0 * scale, "duration"),
+            _store_row(q, "total_equity", 2000.0 * scale, "instant"),
+            _store_row(q, "total_assets", 5000.0 * scale, "instant"),
+            _store_row(q, "shares_outstanding", 100.0, "instant"),
+        ]
+    fs.upsert_quarters(rows)
+
+
+def test_run_no_legacy_fetch(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """FUND-11(위생): run() 시트1 경로에서 구 fetch(fetch_fundamentals/edgar_cached/
+    dart_cached) 호출 0 — 단일 원천(store/registry)으로 이관됨."""
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    _disable_history(mocker)  # SYNC 외부 호출 차단 (probe None → SKIP)
+
+    spy_fund = mocker.spy(fundamentals, "fetch_fundamentals")
+    spy_edgar = mocker.spy(edgar_client, "fetch_edgar_cached")
+    spy_dart = mocker.spy(dart_client, "fetch_dart_cached")
+
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file(
+        "EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n"
+    )
+
+    output_path = run(tickers, env, tmp_path / "output")
+
+    assert output_path.exists()
+    # 시트1 경로 구 fetch 미호출 (단일 원천 — store/registry 읽기로 대체).
+    assert spy_fund.call_count == 0
+    assert spy_edgar.call_count == 0
+    assert spy_dart.call_count == 0
+
+
+def test_run_single_source(
+    mocker, mock_ohlcv_df, tmp_path, tmp_tickers_file, tmp_env_file
+):
+    """FUND-11: sync(DB 적재) 후 시트1 펀더멘털이 store 매트릭스 최신열에서 채워진다.
+
+    격리 store 에 raw 사전 적재 → run() 의 READ 단계가 compute_matrix(SQLite SELECT)로
+    읽어 res.fundamentals 를 store 값으로 재할당. 외부 펀더멘털 fetch 호출 0.
+    """
+    _setup_mock_yfinance(mocker, mock_ohlcv_df)
+    _disable_history(mocker)  # sync 외부 호출 차단 — 이미 적재된 store 만 읽음
+    _seed_store_aapl()
+
+    spy_fund = mocker.spy(fundamentals, "fetch_fundamentals")
+    spy_edgar = mocker.spy(edgar_client, "fetch_edgar_cached")
+    spy_dart = mocker.spy(dart_client, "fetch_dart_cached")
+
+    # write_portfolio_sheet 인자로 전달된 results 의 res.fundamentals 를 캡처.
+    spy_write = mocker.spy(
+        __import__("stocksig.main_run", fromlist=["write_portfolio_sheet"]),
+        "write_portfolio_sheet",
+    )
+
+    tickers = tmp_tickers_file("AAPL\n")
+    env = tmp_env_file(
+        "EDGAR_USER_AGENT_EMAIL=test@example.com\nOPENDART_API_KEY=test-key\n"
+    )
+
+    output_path = run(tickers, env, tmp_path / "output")
+
+    assert output_path.exists()
+    # 외부 펀더멘털 fetch 호출 0 (compute_matrix 는 SQLite SELECT 만).
+    assert spy_fund.call_count == 0
+    assert spy_edgar.call_count == 0
+    assert spy_dart.call_count == 0
+
+    # write_portfolio_sheet 가 받은 results 의 AAPL fundamentals 가 store 매트릭스에서 왔다.
+    assert spy_write.call_count == 1
+    _wb, _formats, results, _failures, _input_order = spy_write.call_args.args[:5]
+    by_sym = {r.spec.symbol: r for r in results}
+    assert "AAPL" in by_sym
+    fund = by_sym["AAPL"].fundamentals
+    assert fund is not None
+    # store 적재 종목 → 4셀 중 가격 무관(완성) GPM/OPM value 존재 (단일 원천 읽기 성공).
+    assert fund.gpm.value is not None
+    assert fund.opm.value is not None
+    # provenance 라벨이 최신 분기(2026Q1)·소스(EDGAR)로 합성됨 (store 경유 단언).
+    assert "2026Q1" in (fund.gpm.note or "")
