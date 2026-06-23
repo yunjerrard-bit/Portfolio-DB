@@ -43,9 +43,9 @@ def test_adapter_maps_latest_column():
     assert result.peg.value == matrix["PEG"][latest_q].value
     assert result.gpm.value == matrix["GPM"][latest_q].value
     assert result.opm.value == matrix["OPM"][latest_q].value
-    # GPM/OPM 은 가격 무관 — 값이 실제로 존재해야(매핑 확인).
+    # 가격 의존 PER·가격 무관 GPM 은 fixture 에서 값 존재 — 매핑이 비자명함을 보장.
+    assert result.per.value is not None
     assert result.gpm.value is not None
-    assert result.opm.value is not None
 
 
 def test_sheet1_matches_snapshot():
@@ -67,14 +67,38 @@ def test_sheet1_matches_snapshot():
         adapted = field_map[m]
         snap_v = getattr(snap, "value", None) if snap is not None else None
         assert adapted.value == snap_v, f"{m} 드리프트 0 (어댑터==스냅샷)"
+    # 적어도 하나는 값이 존재해야 매핑 동치가 비자명함을 보장(GPM 은 가격 무관·완성).
+    assert result.gpm.value is not None
+
+
+def _peg_capable_fetch():
+    """PEG value 가 산출되도록 충분한 분기(EPS_ttm 현재·4분기전 TTM 모두 완성) raw stub.
+
+    EPS_ttm 현재(2026Q1) = 2025Q2~2026Q1 net_income TTM, 4분기전(2025Q1) =
+    2024Q2~2025Q1 net_income TTM. 둘 다 완성되어 성장률 → PEG 가 값으로 나온다.
+    7-tuple = (quarter, source, field, value, period_type, reprt_code, unit).
+    """
+    rows: list[tuple] = []
+    # 2024Q2~2025Q1 net_income = 100 (4분기전 EPS_ttm = 400/100 = 4.0).
+    for q in ("2024Q2", "2024Q3", "2024Q4", "2025Q1"):
+        rows.append((q, "EDGAR", "net_income", 100.0, "duration", None, "USD"))
+    # 2025Q2~2026Q1 net_income = 120 (현재 EPS_ttm = 480/100 = 4.8, 성장 20%).
+    for q in ("2025Q2", "2025Q3", "2025Q4", "2026Q1"):
+        rows.append((q, "EDGAR", "net_income", 120.0, "duration", None, "USD"))
+    rows.append(("2025Q1", "EDGAR", "shares_outstanding", 100.0, "instant", None, "USD"))
+    rows.append(("2026Q1", "EDGAR", "shares_outstanding", 100.0, "instant", None, "USD"))
+    return lambda t: list(rows)
 
 
 def test_peg_provenance_inherited():
     """L5 LANDMINE: compute_peg_cell source=None → 어댑터가 PEG.source = PER.source 승계."""
-    matrix, latest_q = _prepared_matrix("AAPL", price=480.0)
-    # 가격 주입 직후 PEG 셀 자체 source 는 None(compute_peg_cell 계약).
+    matrix = me.compute_matrix("AAPL", fetch_fn=_peg_capable_fetch())
+    latest_q = "2026Q1"
+    me.inject_prices_for_quarter(matrix, latest_q, 48.0, matrix.get("EPS_ttm", {}))
+
+    # 가격 주입 직후 PEG 셀 자체 source 는 None(compute_peg_cell 계약), value 는 존재.
     assert matrix["PEG"][latest_q].source is None
-    assert matrix["PEG"][latest_q].value is not None  # value 는 존재(승계 대상)
+    assert matrix["PEG"][latest_q].value is not None
 
     result = matrix_to_fundamentals(matrix, latest_q)
     assert result.peg.source == result.per.source
