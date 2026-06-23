@@ -487,3 +487,103 @@ def test_fund_failure_row_no_fund_cells(tmp_path):
         c = ws.cell(row=6, column=col)
         assert c.value in (None, "")
         assert c.comment is None
+
+
+# ---------------- 10-03: σ-bucket 색 신호 회귀 0 + D-02 빈DB 빈칸 (FUND-11) ----------
+# Core Value 보호: 시트1 store/registry 이관(Plan 10-01/02) 후에도 σ-bucket 조건부
+# 색 서식이 불변이며, 펀더멘털 4셀은 색과 무관(DEFAULT, num_fmt)함을 회귀-잠금한다.
+# 펀더멘털 결손(D-02 빈DB)이 같은 행의 σ-bucket 색 셀에 영향을 주지 않음도 단언.
+# test_history_integration.py::test_sheet1_unchanged_by_history 의 openpyxl 셀·서식
+# 읽기 패턴 차용. 전부 합성 results — 네트워크 0.
+
+
+def _color(cell):
+    """openpyxl 셀의 폰트 색(ARGB) — 없으면 빈 문자열."""
+    return cell.font.color.value if cell.font and cell.font.color else ""
+
+
+def test_sigma_color_unchanged_after_migration(tmp_path):
+    """σ-bucket 색 신호가 이관 후에도 고정 기대값과 일치(Core Value 회귀 0).
+
+    가격/σ 영역 셀(DIFF·거래량·Stoch·RSI·임펄스)의 폰트 색이 고정 기대 hex 와
+    바이트 일치하고, 펀더멘털 4셀은 색이 부여되지 않은(DEFAULT) num_fmt 셀임을
+    동시 단언한다 — 펀더멘털 이관이 색 로직을 건드리지 않았음을 구조적으로 증명.
+    """
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    # 결정적 σ 입력: DIFF11 = med+1.5σ → SOFT_RED(RED_800), 거래량 = med+2.5σ → HARD_RED(RED_900),
+    # %K=15 → SOFT_GREEN(GREEN_800), RSI=75 → SOFT_RED(RED_800), 임펄스 녹색/청색.
+    # 펀더멘털도 값 부여(EDGAR) — 색 없음을 같은 행에서 확인.
+    fund = _fund(
+        per=(15.5, "EDGAR", "EDGAR · 2026Q1"),
+        peg=(1.25, "EDGAR", "EDGAR · 2026Q1"),
+        gpm=(0.45, "EDGAR", "EDGAR · 2026Q1"),
+        opm=(0.30, "EDGAR", "EDGAR · 2026Q1"),
+    )
+    res = TickerResult(
+        spec=_spec(),
+        enriched_df=_make_enriched_df(
+            diff11=0.0 + 1.5 * 0.01, diff11_med=0.0, diff11_std=0.01,
+            vol_pct=0.25, vol_pct_med=0.0, vol_pct_std=0.1,
+            stoch_k=15.0, rsi=75.0,
+            impulse_daily="녹색", impulse_weekly="청색",
+        ),
+        market="US",
+        fundamentals=fund,
+    )
+    write_portfolio_sheet(wb, formats, [res], [], ["AAPL"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    # σ-bucket / tech-bucket 색 영역 — 고정 기대 hex 와 바이트 일치 (회귀 0).
+    assert _color(ws.cell(row=6, column=8)).upper().endswith("C62828")   # DIFF11 SOFT_RED
+    assert _color(ws.cell(row=6, column=12)).upper().endswith("B71C1C")  # 거래량 HARD_RED
+    assert _color(ws.cell(row=6, column=13)).upper().endswith("2E7D32")  # (일)%K SOFT_GREEN
+    assert _color(ws.cell(row=6, column=14)).upper().endswith("C62828")  # (일)RSI SOFT_RED
+    assert _color(ws.cell(row=6, column=17)).upper().endswith("2E7D32")  # (일)임펄스 녹색
+    assert _color(ws.cell(row=6, column=18)).upper().endswith("1565C0")  # (주)임펄스 청색
+
+    # 펀더멘털 4셀(col 19~22) = 색 없음(DEFAULT) + num_fmt 보존 — 색 영역과 완전 무관(L121).
+    fund_cells = {19: "#,##0.00", 20: "#,##0.00", 21: "0.00%", 22: "0.00%"}
+    for col, num_fmt in fund_cells.items():
+        c = ws.cell(row=6, column=col)
+        # DEFAULT 폰트 = 명시 RGB 없음(테마 기본/검정). σ 색 hex 가 새어들지 않았다.
+        color = _color(c)
+        for sig_hex in ("C62828", "B71C1C", "2E7D32", "1565C0", "1B5E20"):
+            assert not str(color).upper().endswith(sig_hex), (
+                f"펀더멘털 col{col} 에 σ 색 {sig_hex} 누출: {color!r}"
+            )
+        assert c.number_format == num_fmt
+        assert c.value is not None  # 값은 정상 기재
+
+
+def test_missing_db_fund_cells_blank(tmp_path):
+    """D-02: store 분기 데이터 없는 종목(빈 매트릭스 → 어댑터 _empty_cell) → PER/PEG/GPM/OPM
+    4셀 빈칸 + 한국어 사유 주석, 같은 행 σ-bucket 색 셀은 정상 색 유지(색 무영향).
+    """
+    from stocksig.io.fundamentals_view import matrix_to_fundamentals
+
+    path = tmp_path / "out.xlsx"
+    wb, formats = make_workbook(path)
+    # 빈 매트릭스 + latest_q=None → 어댑터가 4셀 모두 _empty_cell(한국어 사유).
+    fund = matrix_to_fundamentals({}, None)
+    res = TickerResult(
+        spec=_spec(),
+        enriched_df=_make_enriched_df(
+            diff11=0.0 + 1.5 * 0.01, diff11_med=0.0, diff11_std=0.01,
+        ),
+        market="US",
+        fundamentals=fund,
+    )
+    write_portfolio_sheet(wb, formats, [res], [], ["AAPL"], now=datetime(2026, 5, 26))
+    wb.close()
+
+    ws = _open(path)["시트1"]
+    # 펀더멘털 4셀 빈칸 + 한국어 사유 주석 (0/특수값 미사용 — D-05).
+    for col in (19, 20, 21, 22):
+        c = ws.cell(row=6, column=col)
+        assert c.value in (None, "")
+        assert c.comment is not None
+        assert "조회 실패" in c.comment.text
+    # σ-bucket 색 셀(DIFF11 SOFT_RED)은 빈DB 펀더멘털과 무관하게 정상 색 유지.
+    assert _color(ws.cell(row=6, column=8)).upper().endswith("C62828")
