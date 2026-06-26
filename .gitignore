@@ -1,11 +1,17 @@
-.planning/
-/output/
+# 비밀정보 (절대 추적 금지)
 .env
+
+# 대용량 결과물
+/output/
 *.xlsx
-__pycache__/
+
+# 재생성되는 캐시/빌드 부산물
 .venv/
-*.pyc
-.pytest_cache/
 .cache/
 docs_cache/
-data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# .planning/ 과 data/ 는 다중 PC 동기화를 위해 추적함 (이전엔 local-only 로 ignore)

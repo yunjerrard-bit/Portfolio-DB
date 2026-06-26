@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-06-10T00:00:00.000Z",
+  "phase": "4",
+  "phase_name": "품질·견고성 마감 (데이터 품질 시트·frozen panes·한국어 로그·색상 톤)",
+  "phase_dir": null,
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "Phase 3 fully closed (UAT 5/5 + VERIFICATION passed + SECURITY threats_open 0). Phase 4 not started — discuss-phase부터 시작.",
+  "completed_tasks": [
+    {"id": "phase3-execute", "name": "Phase 3 전체 실행 (5 waves: 인프라→스파이크→US→KR→배선)", "status": "done", "commit": "d6eaf50~9cfc1df"},
+    {"id": "phase3-uat", "name": "Phase 3 UAT 5/5 통과 (클린 재실행·시세컬럼 복구·US/KR 펀더멘털 값+출처·캐시 HIT)", "status": "done", "note": "03-UAT.md status=complete"},
+    {"id": "phase3-secure", "name": "Phase 3 보안 감사 — 16/16 위협 CLOSED (03-SECURITY.md threats_open=0)", "status": "done", "note": "T-03-12 중복 ID는 T-03-15로 renumber"},
+    {"id": "bugfix-sc4", "name": "SC4 EDGAR 캐시 배선 fix", "status": "done", "commit": "9cfc1df"},
+    {"id": "bugfix-nan-trim", "name": "OHLCV 후행 NaN-Close 봉 트리밍 (quick 260605-kfy)", "status": "done", "commit": "23b01a7"}
+  ],
+  "remaining_tasks": [
+    {"id": "phase4-discuss", "name": "Phase 4 discuss-phase: 데이터 품질 시트 레이아웃·frozen panes 범위·로그 포맷·색 톤 검증 방법 결정", "status": "not_started"},
+    {"id": "phase4-plan", "name": "Phase 4 plan-phase: 04-NN-PLAN 산출 (OUT-04, EXEC-04)", "status": "not_started"},
+    {"id": "phase4-execute", "name": "Phase 4 execute + verify", "status": "not_started"},
+    {"id": "freshness-guard", "name": "(Phase 4 후보) 시세 신선도 가드 — 최신봉이 N영업일 이상 뒤처지면(05-20 잘린응답 사례) 경고/실패 처리. discuss에서 포함 여부 결정", "status": "not_started"},
+    {"id": "fundamentals-history-phase", "name": "(별도 새 phase 후보) 펀더멘털 히스토리 & 델타 추출 — 설계 locked: .planning/backlog/fundamentals-history-delta.md (접수번호 델타·원천 SQLite·지표 registry·트렌드 엑셀). Phase 4 전후 어디든 /gsd-phase --add로 삽입 가능", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "임펄스 시스템(compute/impulse.py + decide_impulse) 현행 유지 — 수정 안 함", "rationale": "사용자 검토 후 확정 (2026-06-05)", "phase": "n/a"},
+    {"decision": "D-07 네이버 소수 폴백 전용 (PER 단일, run당 NAVER_FALLBACK_CAP=20, 초과 시 yf 직행)", "rationale": "공식 API 없는 스크래핑 — ToS·IP 차단 리스크", "phase": "3"},
+    {"decision": "펀더멘털 히스토리 새 phase 설계 locked (Q1 접수번호 델타 / Q2 원천저장+지표registry 저량·유량·하이브리드 / Q3 SQLite+트렌드엑셀)", "rationale": "사용자 3-질문 설계 세션 (2026-06-04)", "phase": "backlog"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "/gsd-discuss-phase 4 (Phase 4 컨텍스트 수집) → /gsd-plan-phase 4 → /gsd-execute-phase 4. 또는 펀더멘털 히스토리 phase를 먼저 추가하려면 /gsd-phase --add.",
+  "context_notes": "Phase 1·2·3 완료(3은 풀 클로즈), 진행률 75%. 자동 테스트 200 passed. Phase 4 범위(ROADMAP): ①모든 시트 1~5행 frozen panes(현재 freeze_panes(5,1) 일부 존재 — 전 시트 일관 적용 확인) ②워크북 마지막 '데이터 품질' 시트(잘못된 티커·부분수신·인증실패·corp_code 매핑실패 종목별 사유) ③콘솔 한국어 진행률+캐시 hit/miss 통계+실패 요약 ④파스텔 색 톤 검증(그레이스케일 ±1σ/±2σ 구분). 주의: tickers.txt는 사용자 개인 watchlist 26티커+ZZZZZ — reset 금지. .planning은 gitignore. 테스트는 반드시 uv run pytest (시스템 python에 stocksig 없음)."
+}
