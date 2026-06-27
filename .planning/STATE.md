@@ -29,7 +29,7 @@ progress:
 Phase: 10 — COMPLETE
 Plan: 3 of 3 (완료)
 Status: Phase 10 complete
-Last activity: 2026-06-23 -- Phase 10 marked complete
+Last activity: 2026-06-27 -- Completed quick task 260627-vpn: 트렌드 렌더 FY-라벨 버그 수정
 
 ## Quick Tasks Completed
 
@@ -37,6 +37,7 @@ Last activity: 2026-06-23 -- Phase 10 marked complete
 |---|-------------|------|--------|-----------|
 | 260617-ijf | WR-01 펀더멘털 NaN 가드 — `_is_missing(None/NaN)` 게이트로 NaN PER/PEG/GPM/OPM 시트 기록 차단 | 2026-06-17 | 222a37b | [260617-ijf-wr-01-nan-is-missing-none-nan-per-peg-gp](./quick/260617-ijf-wr-01-nan-is-missing-none-nan-per-peg-gp/) |
 | 260617-k34 | WR-02~06 안정성 — auth ping 재시도+401/403 한정+구조적 403(IN-02 F841), 캐시 싱글톤 double-checked lock, freeze/smoke 테스트 네트워크 0 stub | 2026-06-17 | ddff54b | [260617-k34-wr-02-06-ping-401-403-403-lock-freeze-sm](./quick/260617-k34-wr-02-06-ping-401-403-403-lock-freeze-sm/) |
+| 260627-vpn | 트렌드 렌더 FY-라벨 버그 — `_calendar_quarter_key` YYYYQn fullmatch 가드(아니면 None, docstring 계약 일치) + `raw_facts` FY-라벨 오염행 6건 삭제. CRDO/LEU/NKE/SIRI/TTWO 트렌드 ValueError 해소(362 passed) | 2026-06-27 | 51f044a | [260627-vpn-fix-trend-fy-label-quarter-key-guard-plu](./quick/260627-vpn-fix-trend-fy-label-quarter-key-guard-plu/) |
 
 ## Performance Metrics
 
