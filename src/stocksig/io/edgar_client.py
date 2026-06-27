@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from edgar import Company, set_identity  # 주의: 패키지명 edgartools ≠ import 이름 edgar
 
@@ -136,10 +137,12 @@ def _calendar_quarter_key(fact) -> str | None:
     # "Q2 2026" → "2026Q2" / 이미 "2026Q2" 형식이면 그대로.
     parts = disp.split()
     if len(parts) == 2 and parts[0].startswith("Q") and parts[1].isdigit():
-        return f"{parts[1]}{parts[0]}"
-    if len(parts) == 2 and parts[1].startswith("Q") and parts[0].isdigit():
-        return f"{parts[0]}{parts[1]}"
-    return disp  # 알 수 없는 형식 — as-reported 보존
+        disp = f"{parts[1]}{parts[0]}"
+    elif len(parts) == 2 and parts[1].startswith("Q") and parts[0].isdigit():
+        disp = f"{parts[0]}{parts[1]}"
+    # 최종 게이트: 정확히 YYYYQn(연도 4자리 + Q + 1~4) 일 때만 통과. 그 외(예 "FY 2026")는
+    # 분기 키가 아니므로 None — metrics_engine 분기축 int() 파싱 오염 차단(docstring '실패 시 None').
+    return disp if re.fullmatch(r"\d{4}Q[1-4]", disp) else None
 
 
 def _iso_or_none(value) -> str | None:

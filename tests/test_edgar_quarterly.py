@@ -128,3 +128,61 @@ def test_shares_skipped_when_absent(mocker):
     assert "shares_outstanding" not in fields
     # 다른 필드는 정상 추출
     assert "revenue" in fields
+
+
+# --- 260627-vpn Task 1: _calendar_quarter_key 최종 반환 가드 회귀 ---
+
+
+class _FakeFact:
+    """FinancialFact 흉내 최소 스텁 — get_display_period_key 만 보유.
+
+    생성자 표시 키를 그대로 돌려준다. 네트워크/외부 호출 0.
+    """
+
+    def __init__(self, display_key):
+        self._display_key = display_key
+
+    def get_display_period_key(self):
+        return self._display_key
+
+
+def test_calendar_quarter_key_fy_label_rejected():
+    # 핵심: 연간 프레임 "FY 2026" 은 분기 키가 아니므로 None (docstring '실패 시 None').
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact("FY 2026")) is None
+
+
+def test_calendar_quarter_key_q_year_normalized():
+    # 정상 경로 유지: "Q2 2026" → "2026Q2".
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact("Q2 2026")) == "2026Q2"
+
+
+def test_calendar_quarter_key_year_q_normalized():
+    # 정상 경로 유지: "2026 Q2" → "2026Q2".
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact("2026 Q2")) == "2026Q2"
+
+
+def test_calendar_quarter_key_already_normalized_token():
+    # 회귀 주의: 공백 없는 정상 키 "2026Q2" 는 최종 게이트를 통과해야 한다.
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact("2026Q2")) == "2026Q2"
+
+
+def test_calendar_quarter_key_empty_returns_none():
+    # 빈 키 가드.
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact("")) is None
+
+
+def test_calendar_quarter_key_none_returns_none():
+    # get_display_period_key 가 None 반환 → None.
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFact(None)) is None
