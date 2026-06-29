@@ -99,8 +99,10 @@ def fetch_edgar_raw(ticker: str) -> dict:
 
 # --- Plan 07-02: per-quarter raw 추출 (additive, 시트1 TTM 경로 불변 D-06) ---
 
-# 유량(duration, by_period_length(3)): 손익 5종 + 영업현금흐름.
-# (concept, 논리 field). EPS는 per-share 라 period_length 무관하지만 duration 으로 취득.
+# 유량(quarterly): 손익 5종 + 영업현금흐름. (concept, 논리 field).
+# 260629-hec(edgartools 5.35.0): by_period_type("quarterly")로 조회한다. quarterly 는
+# 내부적으로 by_period_length(3)에 위임되므로(LOCKED FACT 3) 별도 length 필터는 제거.
+# 조회된 fact 자체의 period_type 은 여전히 'duration' 이라 저장 라벨은 "duration" 유지.
 _EDGAR_DURATION_CONCEPTS: tuple[tuple[str, str], ...] = (
     ("Revenue", "revenue"),
     ("GrossProfit", "gross_profit"),
@@ -118,12 +120,44 @@ _EDGAR_INSTANT_CONCEPTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _calendar_quarter_key(fact) -> str | None:
-    """FinancialFact.get_display_period_key() ("Q2 2026") → "2026Q2" (D-08 캘린더 분기).
+def _quarter_key_from_period_end(period_end) -> str | None:
+    """fact.period_end(종료일) 월 기준 캘린더 분기 "YYYYQn" 산출. 파싱 실패 시 None.
 
-    period 종료일 기준 캘린더 분기로 정규화된 키 사용 — fiscal≠calendar 기업도 일관 정렬.
-    실패 시 None (호출부에서 skip).
+    260629-hec(D-08 진실원천): period 종료일의 캘린더 월 → (month-1)//3+1 분기.
+    period_end 는 str("2026-03-28")·date 객체 양쪽 모두 안전 파싱(앞 7자 "YYYY-MM" 슬라이스).
     """
+    if period_end is None:
+        return None
+    text = str(period_end).strip()
+    # "YYYY-MM..." 앞 7자만 사용(ISO date/datetime 공통). 길이/형식 미달 시 None.
+    if len(text) < 7 or text[4] != "-":
+        return None
+    try:
+        year = int(text[0:4])
+        month = int(text[5:7])
+    except ValueError:
+        return None
+    if not (1 <= month <= 12):
+        return None
+    quarter = (month - 1) // 3 + 1
+    return f"{year}Q{quarter}"
+
+
+def _calendar_quarter_key(fact) -> str | None:
+    """FinancialFact → 캘린더 분기 "YYYYQn" (D-08, period_end 종료일 월 기준).
+
+    260629-hec(edgartools 5.35.0): 키 소스를 period_end 우선으로 교체 —
+    `(month-1)//3+1` 로 캘린더 분기 산출(fiscal≠calendar 기업도 일관 정렬).
+    period_end 부재/파싱 실패 시 기존 get_display_period_key() 차선책으로 폴백.
+    최종 게이트: 정확히 YYYYQn 일 때만 통과(예 "FY 2026"·비분기 입력 → None) —
+    metrics_engine 분기축 int() 파싱 오염 차단. 실패 시 None (호출부에서 skip).
+    """
+    # 1순위: period_end 종료일 월 기반 캘린더 분기.
+    pe_key = _quarter_key_from_period_end(getattr(fact, "period_end", None))
+    if pe_key is not None:
+        return pe_key  # 이미 "YYYYQn" 형식 보장(_quarter_key_from_period_end)
+
+    # 차선책: get_display_period_key() ("Q2 2026") → "2026Q2" 정규화.
     key_fn = getattr(fact, "get_display_period_key", None)
     if not callable(key_fn):
         return None
@@ -175,17 +209,32 @@ def _fact_to_row(ticker: str, field: str, fact, period_type: str) -> dict | None
         "period_end": _iso_or_none(getattr(fact, "period_end", None)),
         "period_type": period_type,
         "reprt_code": None,
+        # 260629-hec(LOCKED FACT 6): 중복 (quarter, field) 정렬 전용. store 12-tuple
+        # 변환(_rows_to_tuples)은 고정 키만 읽으므로 DB 컬럼으로 새지 않는다.
+        "filing_date": _iso_or_none(getattr(fact, "filing_date", None)),
     }
 
 
-def _query_facts(facts, concept: str, period_type: str, period_length: int | None):
-    """facts.query() 빌더 실행 → list[FinancialFact]. 실패/빈 결과 시 빈 리스트."""
+def _query_facts(facts, concept: str, period_type: str | None = None):
+    """facts.query() 빌더 실행 → list[FinancialFact]. 실패/빈 결과 시 빈 리스트.
+
+    260629-hec(edgartools 5.35.0):
+      - period_type 가 주어지면 by_period_type(period_type) 적용(유량="quarterly").
+        "quarterly" 는 내부적으로 by_period_length(3)에 위임(LOCKED FACT 3)이라 별도
+        length 필터 호출은 제거(중복).
+      - period_type 가 None 이면 by_period_type 를 건너뛰고 by_concept→execute 만 수행
+        (저량 BS — 호출부에서 파이썬 instant 필터 적용, LOCKED FACT 5).
+      - 예외는 더 이상 조용히 삼키지 않고 concept·예외타입을 WARNING 로깅(향후 API
+        어휘 변경 가시화, T-hec-02). 결손은 여전히 빈 리스트(추출 전체는 죽지 않음).
+    """
     try:
-        q = facts.query().by_concept(concept).by_period_type(period_type)
-        if period_length is not None:
-            q = q.by_period_length(period_length)
+        q = facts.query().by_concept(concept)
+        if period_type is not None:
+            q = q.by_period_type(period_type)
         result = q.execute()
-    except Exception:  # noqa: BLE001 — 외부 query 빌더, 결손은 빈 리스트로 흡수
+    except Exception as exc:  # noqa: BLE001 — 외부 query 빌더, 결손은 빈 리스트로 흡수
+        # T-04-03: concept·예외타입명만(예외 원문/PII 보간 금지).
+        logger.warning("EDGAR query 실패 concept=%s (%s)", concept, type(exc).__name__)
         return []
     return list(result) if result else []
 
@@ -207,16 +256,22 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
     facts = Company(ticker).get_facts()  # D-01: get_facts 1회 (과거 분기 전부 포함)
     rows: list[dict] = []
 
-    # 유량(duration, 분기 = period_length 3개월).
+    # 유량(quarterly 조회 → fact.period_type 은 'duration'). 260629-hec: by_period_type("quarterly").
     for concept, field in _EDGAR_DURATION_CONCEPTS:
-        for fact in _query_facts(facts, concept, "duration", 3):
+        for fact in _query_facts(facts, concept, "quarterly"):
             row = _fact_to_row(ticker, field, fact, "duration")
             if row is not None:
                 rows.append(row)
 
-    # 저량(instant, BS). [A5] concept 빈 결과 시 헬퍼 fallback.
+    # 저량(instant, BS). 260629-hec(LOCKED FACT 5): by_concept 만으로 조회 후 파이썬에서
+    # period_type=='instant' 필터(instant 어휘는 5.35.0 by_period_type 에서 ValidationError).
+    # [A5] concept 결과 비거나 instant 0건 시 헬퍼 fallback.
     for concept, field in _EDGAR_INSTANT_CONCEPTS:
-        instant_facts = _query_facts(facts, concept, "instant", None)
+        concept_facts = _query_facts(facts, concept, period_type=None)
+        instant_facts = [
+            f for f in concept_facts
+            if getattr(f, "period_type", None) == "instant"
+        ]
         if not instant_facts:
             instant_facts = _instant_fallback(facts, field)
         for fact in instant_facts:
@@ -231,8 +286,25 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
         if row is not None:
             rows.append(row)
 
+    # 260629-hec(LOCKED FACT 6): 같은 (quarter, field)에 다중 fact(정정공시)가 올 때
+    # filing_date(실 FinancialFact.filing_date, 없으면 period_end) 오름차순 안정 정렬 —
+    # 최신/정정값이 마지막에 와 store upsert 마지막-쓰기 승과 정합한다. 키 부재 행은
+    # 빈 문자열로 최하위(None-safe). sorted 는 안정 정렬이라 동일 키 상대순서는 보존.
+    rows.sort(key=_row_sort_key)
+
     logger.info("%s | EDGAR 분기 raw 추출 완료 (%d행)", ticker, len(rows))
     return rows
+
+
+def _row_sort_key(row: dict) -> tuple:
+    """중복 (quarter, field) 정렬 키 — filing_date(없으면 period_end) 오름차순.
+
+    260629-hec(LOCKED FACT 6): 1차 (quarter, field) 로 묶고, 2차 보고일 오름차순 →
+    같은 분기·필드의 정정값이 filing_date 늦은(=최신) 순서로 마지막에 온다. 보고일이
+    None 인 행은 빈 문자열로 최하위(None-safe). ISO 문자열 비교 = 시간순.
+    """
+    report = row.get("filing_date") or row.get("period_end") or ""
+    return (row.get("quarter") or "", row.get("field") or "", str(report))
 
 
 def _instant_fallback(facts, field: str) -> list:

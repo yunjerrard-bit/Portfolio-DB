@@ -1,17 +1,24 @@
-"""Plan 07-02 Task 2: edgar_client.fetch_edgar_quarterly_raw — per-quarter raw 추출.
+"""Plan 07-02 Task 2 + 260629-hec: edgar_client.fetch_edgar_quarterly_raw 추출 + 5.35.0 마이그레이션.
 
 `mocker.patch("stocksig.io.edgar_client.Company")` 로 외부 호출 차단(test_edgar_client.py
-analog). FakeQuarterlyFacts(query 빌더 mock)로 분기별 손익(duration)·BS(instant)·CF·
-shares 행을 구성하고 추출기가:
+analog). FakeQuarterlyFacts(query 빌더 mock)로 분기별 손익(quarterly)·BS(by_concept→instant
+필터)·CF·shares 행을 구성하고 추출기가:
   - get_facts() 1회만 호출(D-01 공짜 backfill, 추가 set_identity 없음)
-  - D-08 quarter "YYYYQn" 정규화
+  - period_end 월 기반 캘린더 분기 "YYYYQn" 정규화
   - instant/duration 필드 구분(Pitfall 3, D-04 BS vs 손익)
   - 결손 value=None(D-05, 0/-999999 아님)
   - accession 보존
 를 단언한다. 네트워크 0(mock).
+
+260629-hec(edgartools 5.35.0): by_period_type("duration"/"instant") → ValidationError 로
+US 전 결손이던 버그 수정. 유량은 by_period_type("quarterly")로, 저량(BS)은 by_concept 후
+파이썬 instant 필터로 조회. _calendar_quarter_key 는 period_end 월 기반. _query_facts 는
+예외를 WARNING 로깅. 중복 (quarter, field)는 filing_date 오름차순(최신 마지막).
 """
 
 from __future__ import annotations
+
+import logging
 
 from fixtures.edgar_aapl_facts import (
     AAPL_QUARTERLY_STORE,
@@ -114,7 +121,9 @@ def test_accession_preserved(mocker):
     rev_q2 = [r for r in rows if r["field"] == "revenue" and r["quarter"] == "2026Q2"]
 
     assert rev_q2
-    assert rev_q2[0]["accession"] == "0000320193-26-000050"
+    # 260629-hec: 같은 (2026Q2, revenue)에 정정 fact 2건 — filing_date 오름차순 후 마지막이
+    # 최신 정정값(accession ...050). 정렬 검증은 test_duplicate_facts_sorted_ascending 가 강화.
+    assert rev_q2[-1]["accession"] == "0000320193-26-000050"
 
 
 def test_shares_skipped_when_absent(mocker):
@@ -186,3 +195,113 @@ def test_calendar_quarter_key_none_returns_none():
     from stocksig.io.edgar_client import _calendar_quarter_key
 
     assert _calendar_quarter_key(_FakeFact(None)) is None
+
+
+# --- 260629-hec Task 1: edgartools 5.35.0 by_period_type 마이그레이션 회귀 ---
+
+import re  # noqa: E402 — 소스 단언용(아래 테스트 전용)
+from pathlib import Path  # noqa: E402
+
+
+class _FakeFactPE:
+    """period_end(+선택 display_key) 보유 최소 스텁 — _calendar_quarter_key period_end 경로용."""
+
+    def __init__(self, period_end=None, display_key=None):
+        self.period_end = period_end
+        self._display_key = display_key
+
+    def get_display_period_key(self):
+        return self._display_key
+
+
+def test_no_duration_instant_period_type_in_source():
+    # 핵심(LOCKED FACT 2): by_period_type("duration")·("instant") 문자열 0건,
+    # by_period_type("quarterly") ≥1건 (US 전 결손 근본 원인 제거).
+    src = Path("src/stocksig/io/edgar_client.py").read_text(encoding="utf-8")
+    assert 'by_period_type("duration")' not in src
+    assert 'by_period_type("instant")' not in src
+    assert src.count('by_period_type("quarterly")') >= 1
+
+
+def test_flow_concepts_use_quarterly(mocker):
+    # 유량 6종(quarterly 조회) 추출 후 revenue/operating_cash_flow 행 존재 +
+    # 저장 period_type 라벨 "duration"(실 fact.period_type 반영, LOCKED FACT 1).
+    from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
+
+    _patch_company(mocker)
+    rows = fetch_edgar_quarterly_raw("AAPL")
+    by_field = {r["field"]: r for r in rows}
+
+    assert "revenue" in by_field
+    assert "operating_cash_flow" in by_field
+    assert by_field["revenue"]["period_type"] == "duration"
+    assert by_field["operating_cash_flow"]["period_type"] == "duration"
+
+
+def test_instant_extracted_via_concept_filter(mocker):
+    # BS 3종이 by_concept 만으로 취득되고 파이썬 instant 필터를 거쳐 period_type=="instant".
+    # StockholdersEquity concept 에 duration 오염 fact 가 있어도 total_equity 행은 instant 만.
+    from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
+
+    _patch_company(mocker)
+    rows = fetch_edgar_quarterly_raw("AAPL")
+    eq_rows = [r for r in rows if r["field"] == "total_equity"]
+
+    assert eq_rows, "total_equity 행 존재"
+    # 혼재 duration fact(999_999_999) 는 걸러지고 instant 행만 통과.
+    for r in eq_rows:
+        assert r["period_type"] == "instant"
+    values = {r["value"] for r in eq_rows}
+    assert 999_999_999.0 not in values  # duration 오염 fact 미통과
+    assert 66_708_000_000.0 in values   # instant fact 통과
+
+
+def test_calendar_quarter_key_from_period_end():
+    # period_end 월 기반 캘린더 분기 (3월→Q1, 6월→Q2). 부재 시 display 차선책. FY/None→None.
+    from stocksig.io.edgar_client import _calendar_quarter_key
+
+    assert _calendar_quarter_key(_FakeFactPE(period_end="2026-03-28")) == "2026Q1"
+    assert _calendar_quarter_key(_FakeFactPE(period_end="2026-06-30")) == "2026Q2"
+    assert _calendar_quarter_key(_FakeFactPE(period_end="2026-12-31")) == "2026Q4"
+    # period_end 부재 + display "Q2 2026" → 차선책으로 "2026Q2".
+    assert _calendar_quarter_key(_FakeFactPE(period_end=None, display_key="Q2 2026")) == "2026Q2"
+    # period_end·display 모두 부재 → None.
+    assert _calendar_quarter_key(_FakeFactPE(period_end=None, display_key=None)) is None
+    # display "FY 2026" → None (fullmatch 가드).
+    assert _calendar_quarter_key(_FakeFactPE(period_end=None, display_key="FY 2026")) is None
+
+
+def test_query_facts_logs_warning_on_exception(mocker, caplog):
+    # _query_facts 가 내부 예외 시 빈 리스트 반환 + WARNING 로깅(조용한 삼킴 제거).
+    from stocksig.io import edgar_client
+
+    class _BoomFacts:
+        def query(self):
+            raise RuntimeError("boom")
+
+    with caplog.at_level(logging.WARNING, logger=edgar_client.logger.name):
+        result = edgar_client._query_facts(_BoomFacts(), "Revenue", "quarterly")
+
+    assert result == []
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "WARNING 레코드 존재"
+    # concept 명·예외 타입명이 구조값으로 남음(렌더 텍스트 단언 아님).
+    joined = " ".join(r.getMessage() for r in warnings)
+    assert "Revenue" in joined
+    assert "RuntimeError" in joined
+
+
+def test_duplicate_facts_sorted_ascending(mocker):
+    # 같은 (2026Q2, revenue)에 filing_date 다른 2 fact → 최신(filing_date 늦은)이 마지막.
+    from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
+
+    _patch_company(mocker)
+    rows = fetch_edgar_quarterly_raw("AAPL")
+    rev_q2 = [r for r in rows if r["field"] == "revenue" and r["quarter"] == "2026Q2"]
+
+    assert len(rev_q2) == 2, "정정 fact 2건 모두 추출"
+    # filing_date 오름차순 → 마지막이 최신 정정값(95_359..., accession ...050).
+    assert rev_q2[-1]["value"] == 95_359_000_000.0
+    assert rev_q2[-1]["accession"] == "0000320193-26-000050"
+    # 첫 행은 더 이른 filing_date 의 원본(94_000..., accession ...040).
+    assert rev_q2[0]["value"] == 94_000_000_000.0

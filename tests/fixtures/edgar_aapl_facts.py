@@ -103,7 +103,14 @@ class FakeFinancialFact:
     """edgartools FinancialFact 의 mock — facts.query()...execute() 가 반환하는 행.
 
     실 FinancialFact 공개 attr 중 추출기가 쓰는 것만: numeric_value(None-safe),
-    period_start/period_end, period_type, accession, unit, get_display_period_key().
+    period_start/period_end, period_type, accession, unit, filing_date,
+    get_display_period_key().
+
+    260629-hec: edgartools 5.35.0 마이그레이션 — 유량은 by_period_type("quarterly")로
+    조회되고(저장 라벨은 실제 fact.period_type="duration" 유지), 저량(BS)은 by_concept
+    만으로 조회 후 파이썬에서 period_type=="instant" 필터를 거친다. filing_date 는
+    실 FinancialFact 의 보고일 속성(models.py L49, date)으로 중복 정렬 키.
+    분기키는 period_end 종료일 월 기준 캘린더 분기로 산출된다(get_display_period_key 차선책).
     """
 
     numeric_value: float | None
@@ -113,13 +120,19 @@ class FakeFinancialFact:
     period_end: str | None = None
     period_type: str = "duration"
     _display_key: str = "Q2 2026"  # "Q{n} {year}" — get_display_period_key() 반환형(D-08)
+    filing_date: str | None = None  # 실 FinancialFact.filing_date(date) — 중복 정렬 키
 
     def get_display_period_key(self) -> str:
         return self._display_key
 
 
 class FakeQuery:
-    """facts.query() 체인 mock — by_concept/by_period_type/by_period_length/execute."""
+    """facts.query() 체인 mock — by_concept/by_period_type/by_period_length/execute.
+
+    260629-hec: by_period_type 미설정(period_type=None) 시 by_concept 만으로 조회 —
+    해당 concept 의 모든 fact(instant/duration 혼재 가능)를 반환한다(저량 BS 경로).
+    by_period_type 설정 시는 (concept, period_type) 키 매칭(유량 quarterly 경로).
+    """
 
     def __init__(self, store: dict):
         self._store = store
@@ -138,7 +151,16 @@ class FakeQuery:
         return self  # 분기=3, mock 은 길이 필터 무시(이미 분기 행만 보유)
 
     def execute(self) -> list:
-        return list(self._store.get((self._concept, self._period_type), []))
+        if self._period_type is not None:
+            # 유량 경로: (concept, period_type) 정확 매칭.
+            return list(self._store.get((self._concept, self._period_type), []))
+        # 저량(BS) 경로: by_concept 만 — 해당 concept 의 모든 period_type fact 반환
+        # (추출기 파이썬 instant 필터가 instant 만 통과시킴).
+        out: list = []
+        for (concept, _ptype), facts in self._store.items():
+            if concept == self._concept:
+                out.extend(facts)
+        return out
 
 
 class FakeQuarterlyFacts:
@@ -155,46 +177,74 @@ class FakeQuarterlyFacts:
         return FakeQuery(self._store)
 
 
-# AAPL 2개 분기(2026Q1·2026Q2) 손익(duration)·BS(instant)·CF(duration) mock 행.
+# AAPL 2개 분기(2026Q1·2026Q2) 손익(quarterly)·BS(by_concept→instant 필터)·CF(quarterly) mock 행.
+# 260629-hec: 유량 키 = (concept, "quarterly") — by_period_type("quarterly")로 조회.
+#   분기키는 period_end 종료일 월 기준 캘린더 분기(2026-03-28→2026Q1, 2026-06-30→2026Q2).
+# BS concept 에는 instant + duration 혼재 fact 를 넣어 파이썬 instant 필터가 instant 만
+#   통과시킴을 입증(StockholdersEquity 에 duration 오염 fact 1개 추가).
 AAPL_QUARTERLY_STORE: dict = {
-    ("Revenue", "duration"): [
+    ("Revenue", "quarterly"): [
+        # period_end 2026-06-30 → 캘린더 Q2. filing_date 가 더 늦은 정정값이 마지막에 오도록.
+        FakeFinancialFact(94_000_000_000.0, "0000320193-26-000040", "USD",
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-07-30"),
+        # 같은 (2026Q2, revenue) 정정 fact — filing_date 더 늦음 → 정렬 후 마지막.
         FakeFinancialFact(95_359_000_000.0, "0000320193-26-000050", "USD",
-                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
+        # period_end 2026-03-28 → 캘린더 Q1.
         FakeFinancialFact(124_300_000_000.0, "0000320193-26-000010", "USD",
-                          "2025-09-28", "2025-12-31", "duration", "Q1 2026"),
+                          "2026-01-01", "2026-03-28", "duration", "Q1 2026",
+                          filing_date="2026-04-30"),
     ],
-    ("NetIncomeLoss", "duration"): [
+    ("NetIncomeLoss", "quarterly"): [
         FakeFinancialFact(23_636_000_000.0, "0000320193-26-000050", "USD",
-                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
-    ("EarningsPerShareDiluted", "duration"): [
+    ("EarningsPerShareDiluted", "quarterly"): [
         FakeFinancialFact(1.57, "0000320193-26-000050", "USD/shares",
-                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
-    ("GrossProfit", "duration"): [
+    ("GrossProfit", "quarterly"): [
         # 결손 케이스: numeric_value=None → value=None 단언용 (D-05).
         FakeFinancialFact(None, "0000320193-26-000050", "USD",
-                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
-    ("NetCashProvidedByUsedInOperatingActivities", "duration"): [
+    ("NetCashProvidedByUsedInOperatingActivities", "quarterly"): [
         FakeFinancialFact(29_935_000_000.0, "0000320193-26-000050", "USD",
-                          "2026-01-01", "2026-03-28", "duration", "Q2 2026"),
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
+    # BS(저량) — by_concept 만으로 조회되며 파이썬 instant 필터를 거친다.
+    # StockholdersEquity 에 duration 오염 fact 1개를 추가 → instant 만 통과 단언용.
     ("StockholdersEquity", "instant"): [
         FakeFinancialFact(66_708_000_000.0, "0000320193-26-000050", "USD",
-                          None, "2026-03-28", "instant", "Q2 2026"),
+                          None, "2026-06-30", "instant", "Q2 2026",
+                          filing_date="2026-08-15"),
+    ],
+    ("StockholdersEquity", "duration"): [
+        # 혼재 오염 fact: instant 필터가 걸러내야 함(total_equity duration 행 미생성).
+        FakeFinancialFact(999_999_999.0, "0000320193-26-000050", "USD",
+                          "2026-04-01", "2026-06-30", "duration", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
     ("Liabilities", "instant"): [
         FakeFinancialFact(277_327_000_000.0, "0000320193-26-000050", "USD",
-                          None, "2026-03-28", "instant", "Q2 2026"),
+                          None, "2026-06-30", "instant", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
     ("Assets", "instant"): [
         FakeFinancialFact(344_085_000_000.0, "0000320193-26-000050", "USD",
-                          None, "2026-03-28", "instant", "Q2 2026"),
+                          None, "2026-06-30", "instant", "Q2 2026",
+                          filing_date="2026-08-15"),
     ],
 }
 
 AAPL_SHARES_FACT = FakeFinancialFact(
     14_840_000_000.0, "0000320193-26-000050", "shares",
-    None, "2026-03-28", "instant", "Q2 2026",
+    None, "2026-06-30", "instant", "Q2 2026",
+    filing_date="2026-08-15",
 )
