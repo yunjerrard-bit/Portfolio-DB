@@ -84,11 +84,14 @@ def test_dart_quarter_semantics():
 def test_edgar_q4_gap_absent():
     """확정 2: EDGAR raw에 캘린더 Q4 손익 단독값·FY duration 부재.
 
-    by_period_length(3) 추출 결과(분기 store)에는 캘린더 Q4(연 마지막 분기)
+    by_period_type("quarterly") 추출 결과(분기 store)에는 캘린더 Q4(연 마지막 분기)
     revenue duration 행이 없고, FY(12개월) duration 행도 저장되지 않음 →
     Q4 단독값으로 Q4 유량 지표를 채울 raw가 영구 부재함을 단언한다.
+
+    260629-hec(edgartools 5.35.0): 유량 store 키가 (concept, "duration") →
+    (concept, "quarterly")로 이동. 의미 진실(Q4/FY duration 부재)은 불변 — 키만 갱신.
     """
-    revenue_duration = AAPL_QUARTERLY_STORE[("Revenue", "duration")]
+    revenue_duration = AAPL_QUARTERLY_STORE[("Revenue", "quarterly")]
     # 저장된 분기 키 = get_display_period_key() ("Q{n} {year}").
     period_keys = {fact.get_display_period_key() for fact in revenue_duration}
 
