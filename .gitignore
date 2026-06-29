@@ -14,4 +14,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# SQLite WAL 보조 파일 — 일시적(체크포인트되면 본 .db 로 합쳐짐). 본 data/*.db 만 추적.
+*.db-wal
+*.db-shm
+
 # .planning/ 과 data/ 는 다중 PC 동기화를 위해 추적함 (이전엔 local-only 로 ignore)
