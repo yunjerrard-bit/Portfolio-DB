@@ -1,8 +1,12 @@
 # BACKLOG: US(EDGAR) 펀더멘털 전 결손 — edgartools 5.35.0 API 변경
 
-**상태:** 진단 완료 · 수정 보류(다른 PC에서 이어받아 수정 예정)
+**상태:** ✅ 완료 (quick 260629-hec, 2026-06-29) — raw_facts 전수 재적재 검증
 **작성:** 2026-06-28 (진단 PC) — 멀티 PC 인계용 핸드오프
 **우선순위:** 높음 (US 종목 펀더멘털 트렌드 전부 무의미한 상태)
+
+> **해결 (2026-06-29, quick 260629-hec):** 6단계 수정안 전부 실행. by_period_type quarterly 마이그레이션 + 파이썬 instant 필터 + period_end 분기키 + WARNING 로깅 + filing_date 정렬. delta_state EDGAR 정리 후 US 125종목 재동기화(ok=125) → 105종목 분기×9필드 회복(AAPL 536행/73분기 등). 전 스위트 368 passed, 시트1 색 신호 0줄(Core Value 불변). 커밋 6586935/70ffa9a/df621f4. 상세: `.planning/quick/260629-hec-edgartools-5-35-0-by-period-type-migrati/260629-hec-SUMMARY.md`.
+>
+> **다음 층 이슈 인계:** raw_facts 는 채워졌으나 **EDGAR Q4 갭** 때문에 트렌드 셀(GPM/PER 등) 최근 분기가 여전히 "-" → 별개 근본원인으로 `.planning/backlog/edgar-q4-gap-ttm-none.md` 에 정식 진단·인계.
 
 > 이 문서는 다른 PC에서 콜드로 이어받기 위한 자족 핸드오프다. 메모리(`~/.claude/.../memory/`)는 PC 로컬이라 동기화되지 않으므로, 진단·수정안을 git 추적 경로(`.planning/`)에 옮겨 둔 것.
 
