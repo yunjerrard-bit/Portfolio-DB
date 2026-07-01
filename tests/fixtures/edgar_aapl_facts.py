@@ -121,6 +121,9 @@ class FakeFinancialFact:
     period_type: str = "duration"
     _display_key: str = "Q2 2026"  # "Q{n} {year}" — get_display_period_key() 반환형(D-08)
     filing_date: str | None = None  # 실 FinancialFact.filing_date(date) — 중복 정렬 키
+    is_dimensioned: bool = False  # 260701: True=세그먼트(차원) fact → Q4 도출 배제
+    dimensions: object | None = None  # 260701: 비차원 총액은 None
+    period_length_months: int | None = None  # 260701: by_period_length 필터용(12/9/3)
 
     def get_display_period_key(self) -> str:
         return self._display_key
@@ -132,12 +135,19 @@ class FakeQuery:
     260629-hec: by_period_type 미설정(period_type=None) 시 by_concept 만으로 조회 —
     해당 concept 의 모든 fact(instant/duration 혼재 가능)를 반환한다(저량 BS 경로).
     by_period_type 설정 시는 (concept, period_type) 키 매칭(유량 quarterly 경로).
+
+    260701(Q4 도출): by_period_length(n)이 지정되면 해당 concept 의 *모든* store 항목에서
+    `period_length_months == n` fact 만 반환(annual=12/9M=9 추출 경로). by_period_type 와
+    by_period_length 는 상호 배타적으로 쓰인다(추출기가 한쪽만 호출). 길이 필터가 지정되면
+    period_type 매칭보다 우선한다(annual/9M 은 store 에 (concept,"annual")/(concept,"ytd9")
+    등 임의 키로 담기므로 concept 전역 스캔 + 길이 필터로 취득).
     """
 
     def __init__(self, store: dict):
         self._store = store
         self._concept: str | None = None
         self._period_type: str | None = None
+        self._period_length: int | None = None
 
     def by_concept(self, concept: str) -> FakeQuery:
         self._concept = concept
@@ -148,19 +158,29 @@ class FakeQuery:
         return self
 
     def by_period_length(self, n: int) -> FakeQuery:
-        return self  # 분기=3, mock 은 길이 필터 무시(이미 분기 행만 보유)
+        self._period_length = n  # 260701: 길이 필터 기록(annual=12/9M=9)
+        return self
 
-    def execute(self) -> list:
-        if self._period_type is not None:
-            # 유량 경로: (concept, period_type) 정확 매칭.
-            return list(self._store.get((self._concept, self._period_type), []))
-        # 저량(BS) 경로: by_concept 만 — 해당 concept 의 모든 period_type fact 반환
-        # (추출기 파이썬 instant 필터가 instant 만 통과시킴).
+    def _all_facts_for_concept(self) -> list:
         out: list = []
         for (concept, _ptype), facts in self._store.items():
             if concept == self._concept:
                 out.extend(facts)
         return out
+
+    def execute(self) -> list:
+        # 260701: 길이 필터 우선(annual/9M 추출) — concept 전역에서 length 일치 fact.
+        if self._period_length is not None:
+            return [
+                f for f in self._all_facts_for_concept()
+                if getattr(f, "period_length_months", None) == self._period_length
+            ]
+        if self._period_type is not None:
+            # 유량 경로: (concept, period_type) 정확 매칭.
+            return list(self._store.get((self._concept, self._period_type), []))
+        # 저량(BS) 경로: by_concept 만 — 해당 concept 의 모든 period_type fact 반환
+        # (추출기 파이썬 instant 필터가 instant 만 통과시킴).
+        return self._all_facts_for_concept()
 
 
 class FakeQuarterlyFacts:

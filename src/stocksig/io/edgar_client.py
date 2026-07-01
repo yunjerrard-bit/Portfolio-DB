@@ -119,6 +119,26 @@ _EDGAR_INSTANT_CONCEPTS: tuple[tuple[str, str], ...] = (
     ("Assets", "total_assets"),
 )
 
+# 260701(Q4 도출): 손익 유량 concept 중 회계 Q4 3M fact 부재로 캘린더 갭이 생기는 것들.
+# EDGAR 는 회계 Q4 를 3M 단독으로 제공하지 않고 10-K 의 연간(12M)만 제공 → 캘린더상 매년
+# 한 분기 영구 결손(_ttm_sum D-05 불관용으로 TTM 연쇄 None). 추출단계에서
+# `Q4(3M) = annual(12M) − 9M(YTD)` 로 도출해 갭 분기를 메운다(엔진 0줄, locked (a)).
+# EPS 는 분기 EPS 를 단순 뺄셈으로 도출하면 주식수 변동 시 왜곡 → 제외(EPS_ttm 은 registry
+# 에서 net_income TTM ÷ 최근 shares 로 계산, A4). OCF 는 3M 단독 fact 자체가 희소(YTD 누계)
+# 라 Q4 도출만으로 완전 복구되진 않으나(별건) 도출 Q4 값은 정확하므로 포함해 부분 개선.
+_EDGAR_Q4_DERIVE_CONCEPTS: tuple[tuple[str, str], ...] = (
+    ("Revenue", "revenue"),
+    ("GrossProfit", "gross_profit"),
+    ("OperatingIncomeLoss", "op_income"),
+    ("NetIncomeLoss", "net_income"),
+    ("NetCashProvidedByUsedInOperatingActivities", "operating_cash_flow"),
+)
+
+# 도출 Q4 provenance 라벨 — as-reported("duration")·저량("instant")과 구분(D-05 정신,
+# "as-reported 만" 원칙과 명시적 분리). metrics_engine._normalize_quarters 는 (quarter,field)
+# 만 키로 쓰므로 이 라벨은 엔진 소비에 무영향(store·엔진 0줄 수정으로 그대로 통과).
+_DERIVED_PERIOD_TYPE = "derived"
+
 
 def _quarter_key_from_period_end(period_end) -> str | None:
     """fact.period_end(종료일) 월 기준 캘린더 분기 "YYYYQn" 산출. 파싱 실패 시 None.
@@ -239,6 +259,116 @@ def _query_facts(facts, concept: str, period_type: str | None = None):
     return list(result) if result else []
 
 
+# --- 260701: Q4 도출 (Q4=annual−9M, 추출단계, locked (a)) --------------------
+
+
+def _query_facts_by_length(facts, concept: str, months: int) -> list:
+    """facts.query().by_concept(concept).by_period_length(months) 실행 → list.
+
+    annual(12)·9M(9) YTD fact 취득 전용. 실패/빈 결과 시 빈 리스트 + WARNING(조용한
+    삼킴 미부활, _query_facts 와 동일 정책). 260701.
+    """
+    try:
+        q = facts.query().by_concept(concept).by_period_length(months)
+        result = q.execute()
+    except Exception as exc:  # noqa: BLE001 — 외부 query 빌더, 결손은 빈 리스트
+        logger.warning(
+            "EDGAR length query 실패 concept=%s months=%d (%s)",
+            concept, months, type(exc).__name__,
+        )
+        return []
+    return list(result) if result else []
+
+
+def _is_total_fact(fact) -> bool:
+    """비차원 총액 fact 여부 — 세그먼트(차원) fact 배제(라이브 스파이크: GOOGL 다중 세그먼트).
+
+    실 FinancialFact 는 `is_dimensioned`(bool) / `dimensions`(None=총액) 를 제공한다.
+    둘 중 하나라도 차원임을 시사하면 제외. 속성 부재 시 총액으로 간주(보수적 통과).
+    """
+    if getattr(fact, "is_dimensioned", False):
+        return False
+    dims = getattr(fact, "dimensions", None)
+    return not dims
+
+
+def _pick_total_by_start(flist: list) -> dict:
+    """비차원 총액 fact 를 period_start 별로 정리 → {period_start: fact}.
+
+    같은 회계연도 누계(annual/9M)는 period_start 가 동일하다(라이브 스파이크 확정 —
+    9M 매칭 = period_start 동일). numeric_value 결손 fact 는 제외. 동일 start 중복 시
+    절대값이 큰(총액) fact 유지(세그먼트 잔재 방어).
+    """
+    out: dict = {}
+    for f in flist:
+        if not _is_total_fact(f):
+            continue
+        if getattr(f, "numeric_value", None) is None:
+            continue
+        start = _iso_or_none(getattr(f, "period_start", None))
+        if start is None:
+            continue
+        prev = out.get(start)
+        if prev is None or abs(f.numeric_value) > abs(prev.numeric_value):
+            out[start] = f
+    return out
+
+
+def _derive_q4_rows(facts, ticker: str, reported_quarters_by_field: dict) -> list[dict]:
+    """손익 유량 concept 별 `Q4(3M) = annual(12M) − 9M(YTD)` 도출 행 생성 (260701).
+
+    각 concept:
+      1) annual(by_period_length(12))·9M(by_period_length(9)) 비차원 총액을 period_start
+         별로 정리.
+      2) 같은 회계연도(period_start 동일)의 (annual, 9M) 쌍마다 Q4 = annual − 9M 도출.
+      3) 분기키 = annual.period_end 월 기준 캘린더 분기(=회계 Q4 = 갭 캘린더 분기).
+      4) 이미 as-reported 3M 행이 있는 (field, quarter)는 skip(충돌 방지 — 정상 분기를
+         도출로 덮지 않음). 갭 분기에만 채운다.
+      5) provenance = _DERIVED_PERIOD_TYPE("derived") — as-reported 와 명시 구분.
+    annual/9M 어느 쪽이든 부재·결손이면 해당 쌍 skip(조용한 except 미부활 — 빈값 자연 처리).
+
+    reported_quarters_by_field: {field: set(quarter)} — 이미 추출된 as-reported 3M 분기.
+    """
+    derived: list[dict] = []
+    for concept, field in _EDGAR_Q4_DERIVE_CONCEPTS:
+        annual_by_start = _pick_total_by_start(_query_facts_by_length(facts, concept, 12))
+        nine_by_start = _pick_total_by_start(_query_facts_by_length(facts, concept, 9))
+        if not annual_by_start or not nine_by_start:
+            continue  # annual/9M 부재 → 도출 불가(별건 결손, 자연 처리)
+
+        already = reported_quarters_by_field.get(field, set())
+        for start, annual_fact in annual_by_start.items():
+            nine_fact = nine_by_start.get(start)
+            if nine_fact is None:
+                continue  # 같은 회계연도 9M 부재 → skip
+            q4_value = annual_fact.numeric_value - nine_fact.numeric_value
+            quarter = _quarter_key_from_period_end(
+                getattr(annual_fact, "period_end", None)
+            )
+            if quarter is None:
+                continue  # 분기키 산출 실패 → skip
+            if quarter in already:
+                continue  # as-reported 3M 존재 → 도출로 덮지 않음(정상 분기 보존)
+
+            derived.append({
+                "ticker": ticker,
+                "source": "EDGAR",
+                "quarter": quarter,
+                "field": field,
+                "value": q4_value,
+                "unit": getattr(annual_fact, "unit", None),
+                # accession: 도출은 두 fact 합성 — annual accession 을 대표로 보존.
+                "accession": getattr(annual_fact, "accession", None),
+                # period_start/end: 도출 Q4 의 3M 구간 = 9M 종료 다음날~연간 종료일.
+                "period_start": _iso_or_none(getattr(nine_fact, "period_end", None)),
+                "period_end": _iso_or_none(getattr(annual_fact, "period_end", None)),
+                "period_type": _DERIVED_PERIOD_TYPE,  # as-reported 와 구분(provenance)
+                "reprt_code": None,
+                "filing_date": _iso_or_none(getattr(annual_fact, "filing_date", None)),
+            })
+    return derived
+
+
 @throttled_edgar
 def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
     """EDGAR EntityFacts 에서 분기별 raw 행 리스트 추출 (Plan 07-02, FUND-07).
@@ -247,21 +377,31 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
     과거 분기가 전부 딸려오므로 별도 호출 없이 전부 추출(추가 set_identity 없음).
     D-04 (신규 추출 경로): 손익 4종 + EPS + 영업현금흐름(duration) + BS 3종(instant).
     D-08: quarter 키는 period 종료일 기준 캘린더 분기 "YYYYQn".
-    D-05: 결손 value=None (0/-999999 금지). as-reported 만 — Q4 보정·분기 분해 금지(Phase 8).
+    D-05: 결손 value=None (0/-999999 금지).
+
+    260701(Q4 도출, locked (a)): as-reported 3M 추출 후, 손익 유량 concept 에 대해
+    `Q4(3M) = annual(12M) − 9M(YTD)` 를 추가 도출해 회계 Q4(=캘린더 갭 분기) 를 메운다.
+    도출 행은 period_type=_DERIVED_PERIOD_TYPE("derived") 로 as-reported 와 구분한다.
+    갭 분기에만 채우며(as-reported 3M 존재 시 skip) 08-01 의 "FY−9M 보정 미구현" deferral 을
+    해소한다. 엔진(metrics_engine)은 0줄 수정 — _normalize_quarters 가 (quarter,field)만
+    키로 소비하므로 4연속 분기 완성 → TTM 자연 복구.
 
     Returns:
         list[dict] — 각 행: ticker/source="EDGAR"/quarter/field/value/unit/accession/
-        period_start/period_end/period_type/reprt_code=None.
+        period_start/period_end/period_type/reprt_code=None. (도출 Q4 는 period_type="derived".)
     """
     facts = Company(ticker).get_facts()  # D-01: get_facts 1회 (과거 분기 전부 포함)
     rows: list[dict] = []
 
     # 유량(quarterly 조회 → fact.period_type 은 'duration'). 260629-hec: by_period_type("quarterly").
+    # 260701: as-reported 3M 분기를 field 별로 기록(Q4 도출 시 정상 분기 덮어쓰기 방지).
+    reported_quarters_by_field: dict[str, set[str]] = {}
     for concept, field in _EDGAR_DURATION_CONCEPTS:
         for fact in _query_facts(facts, concept, "quarterly"):
             row = _fact_to_row(ticker, field, fact, "duration")
             if row is not None:
                 rows.append(row)
+                reported_quarters_by_field.setdefault(field, set()).add(row["quarter"])
 
     # 저량(instant, BS). 260629-hec(LOCKED FACT 5): by_concept 만으로 조회 후 파이썬에서
     # period_type=='instant' 필터(instant 어휘는 5.35.0 by_period_type 에서 ValidationError).
@@ -285,6 +425,10 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
         row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
         if row is not None:
             rows.append(row)
+
+    # 260701: Q4 도출 — 손익 유량 concept 의 회계 Q4(=캘린더 갭 분기)를 annual−9M 으로
+    # 메운다. as-reported 3M 이 이미 있는 분기는 skip(reported_quarters_by_field 참조).
+    rows.extend(_derive_q4_rows(facts, ticker, reported_quarters_by_field))
 
     # 260629-hec(LOCKED FACT 6): 같은 (quarter, field)에 다중 fact(정정공시)가 올 때
     # filing_date(실 FinancialFact.filing_date, 없으면 period_end) 오름차순 안정 정렬 —
