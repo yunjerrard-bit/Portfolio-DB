@@ -139,6 +139,18 @@ _EDGAR_Q4_DERIVE_CONCEPTS: tuple[tuple[str, str], ...] = (
 # 만 키로 쓰므로 이 라벨은 엔진 소비에 무영향(store·엔진 0줄 수정으로 그대로 통과).
 _DERIVED_PERIOD_TYPE = "derived"
 
+# 260701(커밋2): shares_outstanding us-gaap 폴백 concept.
+# facts.shares_outstanding_fact(dei:EntityCommonStockSharesOutstanding)는 종목당 1행 또는
+# 0행(concept 부재)만 적재 → per-share 분모 결손. dei 부재 시 us-gaap 분기별 instant
+# concept 을 폴백으로 추출해 분기별 shares 확보(PER_SHARE/가격의존 분모 복구, 백로그 근본원인3).
+# 순서 = 선호도(먼저 값이 있는 concept 채택). WeightedAverage* 는 EPS 계산에 쓰이는 가중평균
+# 발행주식수로, 시점 발행주식수(CommonStockSharesOutstanding)가 없을 때의 차선책.
+_EDGAR_SHARES_FALLBACK_CONCEPTS: tuple[str, ...] = (
+    "CommonStockSharesOutstanding",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+)
+
 
 def _quarter_key_from_period_end(period_end) -> str | None:
     """fact.period_end(종료일) 월 기준 캘린더 분기 "YYYYQn" 산출. 파싱 실패 시 None.
@@ -419,12 +431,15 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
             if row is not None:
                 rows.append(row)
 
-    # 발행주식수: facts.shares_outstanding_fact 있으면 행 추가, 없으면 skip.
+    # 발행주식수: facts.shares_outstanding_fact(dei 단일행) 있으면 행 추가.
+    # 260701(커밋2): dei 부재 시 us-gaap 분기별 폴백으로 분기 shares 확보(per-share 분모 복구).
     shares_fact = getattr(facts, "shares_outstanding_fact", None)
     if shares_fact is not None:
         row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
         if row is not None:
             rows.append(row)
+    else:
+        rows.extend(_shares_fallback_rows(facts, ticker))
 
     # 260701: Q4 도출 — 손익 유량 concept 의 회계 Q4(=캘린더 갭 분기)를 annual−9M 으로
     # 메운다. as-reported 3M 이 이미 있는 분기는 skip(reported_quarters_by_field 참조).
@@ -472,4 +487,33 @@ def _instant_fallback(facts, field: str) -> list:
     # FinancialFact (numeric_value 보유) 만 행으로 사용. 스칼라는 quarter 산출 불가 → skip.
     if result is not None and hasattr(result, "numeric_value"):
         return [result]
+    return []
+
+
+def _shares_fallback_rows(facts, ticker: str) -> list[dict]:
+    """dei shares_outstanding_fact 부재 시 us-gaap 분기별 shares 폴백 행 생성 (260701 커밋2).
+
+    _EDGAR_SHARES_FALLBACK_CONCEPTS 를 선호도 순으로 시도, 첫 번째로 instant fact 를
+    산출하는 concept 을 채택해 분기별 shares_outstanding 행을 만든다. per-share 분모
+    (EPS_ttm/BPS/SPS/OCF_ps)·가격의존 분모 복구용. concept 전부 결손이면 빈 리스트
+    (조용한 except 미부활 — _query_facts 가 WARNING 로깅, 결손은 빈값 자연 처리).
+
+    저량(instant)이므로 quarter 별 시점값 — 같은 (quarter, shares_outstanding) 중복은
+    상위 정렬(_row_sort_key)이 최신 filing_date 를 마지막에 두어 store upsert 정합.
+    """
+    for concept in _EDGAR_SHARES_FALLBACK_CONCEPTS:
+        concept_facts = _query_facts(facts, concept, period_type=None)
+        instant_facts = [
+            f for f in concept_facts
+            if getattr(f, "period_type", None) == "instant"
+        ]
+        if not instant_facts:
+            continue
+        out: list[dict] = []
+        for fact in instant_facts:
+            row = _fact_to_row(ticker, "shares_outstanding", fact, "instant")
+            if row is not None:
+                out.append(row)
+        if out:
+            return out  # 첫 산출 concept 채택(선호도 순)
     return []

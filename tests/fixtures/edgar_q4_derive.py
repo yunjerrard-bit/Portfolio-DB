@@ -99,3 +99,33 @@ Q4_DERIVE_STORE: dict = {
 def make_facts(shares_fact=None) -> FakeQuarterlyFacts:
     """Q4 도출 store 로 EntityFacts mock 생성 (FakeQuarterlyFacts 재사용)."""
     return FakeQuarterlyFacts(Q4_DERIVE_STORE, shares_fact=shares_fact)
+
+
+# --- 260701 커밋2: shares_outstanding us-gaap 폴백 픽스처 -------------------
+# 시나리오: facts.shares_outstanding_fact 는 None(dei concept 부재)이지만
+# us-gaap:CommonStockSharesOutstanding 분기별 instant fact 는 존재 → 폴백으로 분기별
+# shares 확보 → per-share 분모(EPS_ttm/BPS/SPS/OCF_ps) 복구.
+_SHARES_Q3 = 12_300_000_000.0
+_SHARES_Q4 = 12_250_000_000.0
+SHARES_Q4_EXPECTED = _SHARES_Q4
+
+# 폴백 concept 별 분기 instant fact. (concept, "instant") 키 — by_concept 스캔 경로.
+_SHARES_FALLBACK_FACTS: dict = {
+    ("CommonStockSharesOutstanding", "instant"): [
+        FakeFinancialFact(_SHARES_Q3, "acc-sh-q3", "shares", None, "2025-09-30",
+                          "instant", "Q3 2025", filing_date="2025-10-30"),
+        FakeFinancialFact(_SHARES_Q4, "acc-sh-q4", "shares", None, "2025-12-31",
+                          "instant", "Q4 2025", filing_date="2026-02-01"),
+    ],
+}
+
+
+def make_facts_shares_fallback() -> FakeQuarterlyFacts:
+    """shares_outstanding_fact=None + us-gaap 분기 shares 폴백 fact 보유 mock.
+
+    Q4_DERIVE_STORE + 폴백 shares concept fact 병합. dei 단일행(shares_outstanding_fact)
+    은 None 이라 추출기가 us-gaap 폴백을 타야 분기 shares 를 확보한다.
+    """
+    store = dict(Q4_DERIVE_STORE)
+    store.update(_SHARES_FALLBACK_FACTS)
+    return FakeQuarterlyFacts(store, shares_fact=None)
