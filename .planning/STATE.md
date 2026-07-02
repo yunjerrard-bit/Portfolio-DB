@@ -15,7 +15,7 @@ progress:
 
 # STATE: 표준편차 기반 주식 매매신호 + 포트폴리오 관리 시트
 
-**Last updated:** 2026-06-17
+**Last updated:** 2026-07-02
 
 ## Project Reference
 
@@ -29,7 +29,7 @@ progress:
 Phase: 10 — COMPLETE
 Plan: 3 of 3 (완료)
 Status: Phase 10 complete
-Last activity: 2026-06-29 -- Completed quick task 260629-hec: edgartools 5.35.0 by_period_type 마이그레이션 + US 전수 재적재 (후속 Q4 갭 인계)
+Last activity: 2026-07-02 -- Completed quick task 260702-nrs: 펀더멘털 트렌드 엑셀 전 탭 헤더행 freeze + ROE/ROA 퍼센트 표기
 
 ## Quick Tasks Completed
 
@@ -39,6 +39,7 @@ Last activity: 2026-06-29 -- Completed quick task 260629-hec: edgartools 5.35.0 
 | 260617-k34 | WR-02~06 안정성 — auth ping 재시도+401/403 한정+구조적 403(IN-02 F841), 캐시 싱글톤 double-checked lock, freeze/smoke 테스트 네트워크 0 stub | 2026-06-17 | ddff54b | [260617-k34-wr-02-06-ping-401-403-403-lock-freeze-sm](./quick/260617-k34-wr-02-06-ping-401-403-403-lock-freeze-sm/) |
 | 260627-vpn | 트렌드 렌더 FY-라벨 버그 — `_calendar_quarter_key` YYYYQn fullmatch 가드(아니면 None, docstring 계약 일치) + `raw_facts` FY-라벨 오염행 6건 삭제. CRDO/LEU/NKE/SIRI/TTWO 트렌드 ValueError 해소(362 passed) | 2026-06-27 | 51f044a | [260627-vpn-fix-trend-fy-label-quarter-key-guard-plu](./quick/260627-vpn-fix-trend-fy-label-quarter-key-guard-plu/) |
 | 260629-hec | edgartools 5.35.0 `by_period_type` 마이그레이션 — duration/instant 폐기 ValidationError 가 `_query_facts` 조용한 except 에 삼켜져 US 전 결손이던 버그 수정(quarterly + 파이썬 instant 필터 + period_end 분기키 + WARNING 로깅 + filing_date 정렬). delta_state EDGAR 정리 후 US 125종목 재적재 → 105종목 분기×9필드 회복(368 passed, 시트1 0줄). 후속: EDGAR Q4 갭 별개 인계(edgar-q4-gap-ttm-none.md) | 2026-06-29 | 6586935 | [260629-hec-edgartools-5-35-0-by-period-type-migrati](./quick/260629-hec-edgartools-5-35-0-by-period-type-migrati/) |
+| 260702-nrs | 펀더멘털 트렌드 엑셀 표시 수정 — 전 탭 헤더행(1행) freeze(지표·스냅샷 `freeze_panes(1,1)`=B2, 원천 `freeze_panes(1,0)`=A2) + ROE/ROA display 층 `_PERCENT_METRICS` 퍼센트 표기(레지스트리 `is_ratio_0_1` 불변). AAPL ROE 115.1%는 자사주 매입발 정상값 검증(수정 없음). 25 passed | 2026-07-02 | 2561b6d | [260702-nrs-fund-roe-roa-pct-header-freeze](./quick/260702-nrs-fund-roe-roa-pct-header-freeze/) |
 
 ## Performance Metrics
 
