@@ -553,6 +553,19 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
     # 메운다. as-reported 3M 이 이미 있는 분기는 skip(reported_quarters_by_field 참조).
     rows.extend(_derive_q4_rows(facts, ticker, reported_quarters_by_field))
 
+    # 260701(커밋5): shares-only 분기 제거. 발행주식수(us-gaap/dei)는 표지·BS 기준일 차이로
+    # 재무 분기보다 앞선 분기(예 2026Q2)에 shares 만 단독 적재될 수 있는데, 그 분기는 재무
+    # 분자(net_income/total_equity 등)가 없어 per-share·전 지표가 산출 불가하면서 트렌드/스냅샷
+    # 최신열만 오염(전 종목 "-")시킨다. 재무필드가 하나도 없는 분기의 shares 행은 제외한다
+    # (어떤 지표도 못 만들어 손실 0 — compute_matrix 분기축이 재무 분기로 정렬됨, 엔진 0줄).
+    _financial_quarters = {
+        r["quarter"] for r in rows if r["field"] != "shares_outstanding"
+    }
+    rows = [
+        r for r in rows
+        if r["field"] != "shares_outstanding" or r["quarter"] in _financial_quarters
+    ]
+
     # 260629-hec(LOCKED FACT 6): 같은 (quarter, field)에 다중 fact(정정공시)가 올 때
     # filing_date(실 FinancialFact.filing_date, 없으면 period_end) 오름차순 안정 정렬 —
     # 최신/정정값이 마지막에 와 store upsert 마지막-쓰기 승과 정합한다. 키 부재 행은

@@ -174,18 +174,45 @@ def test_shares_prefers_usgaap_over_dei(mocker):
 
 
 def test_shares_dei_last_resort_when_no_usgaap(mocker):
-    """us-gaap 폴백 전무 시에만 dei 단일 fact 를 최후수단으로 사용."""
+    """us-gaap 폴백 전무 시 dei 단일 fact 를 최후수단으로 사용(재무 분기에 얹힌 경우 유지)."""
     from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
 
-    # us-gaap 폴백 concept 제거한 store → dei 만 남음.
+    # us-gaap 폴백 concept 제거 → dei 만. dei 를 재무필드 있는 분기(2025Q4=equity/liab/assets)에
+    # 두어 shares-only 필터에 걸리지 않게(재무 분기 정렬된 dei 는 유지됨).
+    dei_q4 = FakeFinancialFact(
+        12.20 * _B, "acc-dei-q4", "shares", None, "2025-12-31", "instant", "Q4 2025",
+        filing_date="2026-02-01", concept="dei:EntityCommonStockSharesOutstanding",
+    )
     store = {k: v for k, v in _STORE.items() if k[0] != "CommonStockSharesOutstanding"}
     mock_company = mocker.patch("stocksig.io.edgar_client.Company")
     mock_company.return_value.get_facts.return_value = FakeQuarterlyFacts(
-        store, shares_fact=_DEI_SHARES
+        store, shares_fact=dei_q4
     )
     rows = fetch_edgar_quarterly_raw("GOOGL")
     share_quarters = {r["quarter"] for r in rows if r["field"] == "shares_outstanding"}
-    assert "2026Q1" in share_quarters, "us-gaap 부재 → dei 최후수단 사용"
+    assert "2025Q4" in share_quarters, "us-gaap 부재 → dei 최후수단(재무 분기 정렬) 사용"
+
+
+def test_shares_only_quarter_dropped(mocker):
+    """재무필드 없이 shares 만 있는 분기(표지 기준일)는 제외 — 최신열 오염 방지."""
+    from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
+
+    # us-gaap shares 에 2026Q2(재무필드 전무, 표지일) fact 추가. 다른 field 는 2025Q3/Q4 뿐.
+    store = dict(_STORE)
+    store[("CommonStockSharesOutstanding", "instant")] = _USGAAP_SHARES + [
+        FakeFinancialFact(12.1 * _B, "acc-sh-coverpage", "shares", None, "2026-06-30",
+                          "instant", "Q2 2026", filing_date="2026-07-30",
+                          concept="us-gaap:CommonStockSharesOutstanding"),
+    ]
+    mock_company = mocker.patch("stocksig.io.edgar_client.Company")
+    mock_company.return_value.get_facts.return_value = FakeQuarterlyFacts(store)
+
+    rows = fetch_edgar_quarterly_raw("GOOGL")
+    share_quarters = {r["quarter"] for r in rows if r["field"] == "shares_outstanding"}
+    fin_quarters = {r["quarter"] for r in rows if r["field"] != "shares_outstanding"}
+    assert "2026Q2" not in fin_quarters, "2026Q2 는 재무필드 없음(전제)"
+    assert "2026Q2" not in share_quarters, "shares-only 분기(2026Q2) 제외됨"
+    assert {"2025Q3", "2025Q4"} <= share_quarters, "재무필드 있는 분기 shares 는 유지"
 
 
 def test_concept_absent_lenient_passthrough(mocker):
