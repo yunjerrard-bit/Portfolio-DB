@@ -246,12 +246,12 @@ def test_raw_and_snapshot_sheets(wired, tmp_path):
 
 
 def test_freeze(wired, tmp_path):
-    """지표 시트 freeze_panes == 'B1'(A열만, 헤더행 미고정) — D-04."""
+    """지표/스냅샷 시트 freeze_panes == 'B2'(헤더행+A열 고정) — D-04."""
     history_render.run_history("tickers.txt", str(tmp_path))
     path = next(tmp_path.glob("fundamentals_history_*.xlsx"))
     wb = load_workbook(path)
-    assert wb["PER"].freeze_panes == "B1"
-    assert wb["최신 스냅샷"].freeze_panes == "B1"
+    assert wb["PER"].freeze_panes == "B2"
+    assert wb["최신 스냅샷"].freeze_panes == "B2"
 
 
 def test_all_nine_metric_sheets(wired, tmp_path):

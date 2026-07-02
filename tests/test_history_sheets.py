@@ -2,9 +2,9 @@
 
 openpyxl 정적 read-back 으로 검증:
   - matrix: 식별 5열 + 분기열(최신 왼쪽), 결손 "-"+코멘트(D-11), 상대색 fill(D-05/06),
-    YoY 글리프(D-08), 비율 지표 퍼센트 표기(WARNING-2), A열만 freeze(D-04).
-  - raw: [원천] long 시트 헤더 + 7-tuple 행.
-  - snapshot: [최신 스냅샷] 식별 5열 + 9지표, 최신값 재사용, PEG 결손 "-".
+    YoY 글리프(D-08), 비율 지표·ROE/ROA 퍼센트 표기(WARNING-2), 헤더행+A열 freeze(D-04).
+  - raw: [원천] long 시트 헤더 + 7-tuple 행, 헤더행만 freeze(A2).
+  - snapshot: [최신 스냅샷] 식별 5열 + 9지표, 최신값 재사용, PEG 결손 "-", ROE/ROA 퍼센트.
 
 전부 합성 MetricCell / fixture — yfinance·네트워크 호출 0.
 """
@@ -37,7 +37,7 @@ def _write_matrix(path, metric, ticker_rows, display_quarters, peer_lookup, prio
 
 
 def test_matrix_headers_and_freeze(tmp_path):
-    """식별 5열 헤더 + 최신 분기 왼쪽(D-01) + A열만 freeze(D-04)."""
+    """식별 5열 헤더 + 최신 분기 왼쪽(D-01) + 헤더행+A열 freeze(D-04)."""
     path = str(tmp_path / "h.xlsx")
     display_quarters = ["2026Q1", "2025Q4", "2025Q3", "2025Q2", "2025Q1"]
     rows = [
@@ -60,7 +60,7 @@ def test_matrix_headers_and_freeze(tmp_path):
     assert ws["B1"].value == "기업명"
     assert ws["E1"].value == "산업"
     assert ws["F1"].value == display_quarters[0] == "2026Q1"  # 최신 왼쪽
-    assert ws.freeze_panes == "B1"  # A열만, 헤더행 미고정
+    assert ws.freeze_panes == "B2"  # 헤더행+A열 고정, B2 부터 스크롤
 
 
 def test_matrix_missing_cell_dash_and_comment(tmp_path):
@@ -182,6 +182,39 @@ def test_matrix_ratio_percent_vs_decimal(tmp_path):
     assert "%" not in ws2["F2"].value and "." in ws2["F2"].value
 
 
+def test_matrix_roe_roa_percent(tmp_path):
+    """ROE/ROA 는 registry is_ratio_0_1=False 지만 매트릭스에서 퍼센트(.1f%)로 표기.
+
+    ROE 1.151 → "115.1%" (100% 초과 가능 — AAPL 실측). registry 플래그 불변.
+    """
+    q = "2026Q1"
+    display_quarters = [q]
+    import os
+    import tempfile
+
+    d = tempfile.mkdtemp()
+
+    roe_rows = [{"ticker": "AAPL", "company": "A", "market": "US", "tier": "A",
+                 "industry": "tech", "cells": {q: _cell(1.151)}}]
+    p_roe = os.path.join(d, "roe.xlsx")
+    _write_matrix(
+        p_roe, "ROE", roe_rows, display_quarters,
+        peer_lookup=lambda m, q, ind: [], prior_lookup=lambda m, t, q: None,
+    )
+    ws_roe = openpyxl.load_workbook(p_roe)["ROE"]
+    assert "%" in ws_roe["F2"].value and "115.1%" in ws_roe["F2"].value
+
+    roa_rows = [{"ticker": "AAPL", "company": "A", "market": "US", "tier": "A",
+                 "industry": "tech", "cells": {q: _cell(0.09)}}]
+    p_roa = os.path.join(d, "roa.xlsx")
+    _write_matrix(
+        p_roa, "ROA", roa_rows, display_quarters,
+        peer_lookup=lambda m, q, ind: [], prior_lookup=lambda m, t, q: None,
+    )
+    ws_roa = openpyxl.load_workbook(p_roa)["ROA"]
+    assert "%" in ws_roa["F2"].value and "9.0%" in ws_roa["F2"].value
+
+
 # ---------------- raw -----------------------------------------------------
 
 
@@ -210,6 +243,8 @@ def test_raw_sheet_long_rows(tmp_path):
     # 결손 value → "-"
     row3 = [ws2.cell(row=3, column=c).value for c in range(1, 9)]
     assert "-" in row3
+    # 원천 시트: 헤더행만 freeze(A2, 키 컬럼 미고정) — D-04.
+    assert ws2.freeze_panes == "A2"
 
 
 # ---------------- snapshot -------------------------------------------------
@@ -255,3 +290,12 @@ def test_snapshot_sheet_one_row_per_ticker(tmp_path):
     peg_col = headers.index("PEG") + 1
     assert ws2.cell(row=2, column=peg_col).value == "-"
     assert ws2.cell(row=2, column=peg_col).comment is not None
+    # ROE 0.18 → "18.0%", ROA 0.09 → "9.0%" (퍼센트 표기, registry 불변).
+    roe_col = headers.index("ROE") + 1
+    roe_val = str(ws2.cell(row=2, column=roe_col).value)
+    assert "%" in roe_val and "18.0%" in roe_val
+    roa_col = headers.index("ROA") + 1
+    roa_val = str(ws2.cell(row=2, column=roa_col).value)
+    assert "%" in roa_val and "9.0%" in roa_val
+    # 스냅샷 헤더행+A열 freeze(B2) — D-04.
+    assert ws2.freeze_panes == "B2"
