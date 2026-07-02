@@ -533,17 +533,21 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
             if row is not None:
                 rows.append(row)
 
-    # 발행주식수: dei shares_outstanding_fact(있으면) + us-gaap 분기별 폴백을 **항상 병합**.
-    # 260701(커밋3): dei 가 present 여도 종목당 1행뿐인 경우가 많아(AAPL) 분기 커버리지가 없다
-    # → us-gaap 분기별 폴백을 dei 유무와 무관하게 병합해 per-share 분모(EPS_ttm/BPS/SPS/OCF_ps)의
-    # 분기 커버리지를 확보한다. 같은 (quarter, shares_outstanding) 충돌은 _row_sort_key(filing_date)
-    # + upsert 마지막-쓰기로 정합(최신 값 우선).
-    shares_fact = getattr(facts, "shares_outstanding_fact", None)
-    if shares_fact is not None:
-        row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
-        if row is not None:
-            rows.append(row)
-    rows.extend(_shares_fallback_rows(facts, ticker))
+    # 발행주식수: us-gaap 분기별 폴백을 **우선**, 비면 dei 단일 fact 를 최후수단으로.
+    # 260701(커밋4): dei shares_outstanding_fact(EntityCommonStockSharesOutstanding)는 표지
+    # (cover-page) 기준일 단일값이라, 재무 분기(BS/손익)보다 앞선 shares-only 분기(예 2026Q2)를
+    # 만들어 스냅샷·트렌드 최신열을 오염시킨다(해당 분기엔 shares 만 존재 → 전 지표 결손). us-gaap
+    # CommonStockSharesOutstanding 분기별 shares 가 있으면 그것으로 per-share 분모 커버리지가
+    # 확보되고 재무 분기와 정렬되므로 dei 는 넣지 않는다. 폴백 전무 시에만 dei 최후수단(희소).
+    fallback_rows = _shares_fallback_rows(facts, ticker)
+    if fallback_rows:
+        rows.extend(fallback_rows)
+    else:
+        shares_fact = getattr(facts, "shares_outstanding_fact", None)
+        if shares_fact is not None:
+            row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
+            if row is not None:
+                rows.append(row)
 
     # 260701: Q4 도출 — 손익 유량 concept 의 회계 Q4(=캘린더 갭 분기)를 annual−9M 으로
     # 메운다. as-reported 3M 이 이미 있는 분기는 skip(reported_quarters_by_field 참조).

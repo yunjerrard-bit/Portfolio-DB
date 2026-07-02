@@ -72,10 +72,12 @@ _ASSET_INSTANT = [
                       concept="us-gaap:OtherAssetsNoncurrent"),
 ]
 
-# --- shares: dei 단일(2025Q4) + us-gaap 분기별(2025Q3·Q4) 폴백 → 항상 병합 ---
+# --- shares: dei 표지(2026Q1, 앞선 분기) vs us-gaap 분기별(2025Q3·Q4) 폴백 우선 ---
+# dei 는 재무 분기보다 앞선 shares-only 분기를 만들어 최신열을 오염 → us-gaap 폴백이 있으면
+# dei 는 넣지 않는다(커밋4). 그래서 dei 분기(2026Q1)는 shares 결과에 없어야 함.
 _DEI_SHARES = FakeFinancialFact(
-    12.25 * _B, "acc-dei-sh", "shares", None, "2025-12-31", "instant", "Q4 2025",
-    filing_date="2026-02-01", concept="dei:EntityCommonStockSharesOutstanding",
+    12.20 * _B, "acc-dei-sh", "shares", None, "2026-03-31", "instant", "Q1 2026",
+    filing_date="2026-05-01", concept="dei:EntityCommonStockSharesOutstanding",
 )
 _USGAAP_SHARES = [
     FakeFinancialFact(12.30 * _B, "acc-sh-q3", "shares", None, "2025-09-30",
@@ -158,15 +160,32 @@ def test_total_assets_picks_total_not_subline(mocker):
     assert 93.1 * _B not in asset_vals, "sub-line 배제"
 
 
-def test_shares_always_merges_usgaap_fallback(mocker):
-    """dei shares_fact present 여도 us-gaap 분기별 폴백을 병합 → 분기 커버리지 ≥2."""
+def test_shares_prefers_usgaap_over_dei(mocker):
+    """us-gaap 분기별 폴백이 있으면 그것을 쓰고(분기 커버리지), dei 표지 단일분기는 배제."""
     from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
 
-    _patch(mocker)  # dei present(1행) + us-gaap 폴백(2분기)
+    _patch(mocker)  # dei present(2026Q1, 앞선 분기) + us-gaap 폴백(2025Q3·Q4)
     rows = fetch_edgar_quarterly_raw("GOOGL")
 
     share_quarters = {r["quarter"] for r in rows if r["field"] == "shares_outstanding"}
-    assert {"2025Q3", "2025Q4"} <= share_quarters, "dei 유무 무관 us-gaap 분기 폴백 병합"
+    assert {"2025Q3", "2025Q4"} <= share_quarters, "us-gaap 분기별 shares 채택"
+    # dei 표지 분기(2026Q1)는 shares-only 오염 분기 → us-gaap 있으면 배제.
+    assert "2026Q1" not in share_quarters, "dei 표지 단일분기 배제(최신열 오염 방지)"
+
+
+def test_shares_dei_last_resort_when_no_usgaap(mocker):
+    """us-gaap 폴백 전무 시에만 dei 단일 fact 를 최후수단으로 사용."""
+    from stocksig.io.edgar_client import fetch_edgar_quarterly_raw
+
+    # us-gaap 폴백 concept 제거한 store → dei 만 남음.
+    store = {k: v for k, v in _STORE.items() if k[0] != "CommonStockSharesOutstanding"}
+    mock_company = mocker.patch("stocksig.io.edgar_client.Company")
+    mock_company.return_value.get_facts.return_value = FakeQuarterlyFacts(
+        store, shares_fact=_DEI_SHARES
+    )
+    rows = fetch_edgar_quarterly_raw("GOOGL")
+    share_quarters = {r["quarter"] for r in rows if r["field"] == "shares_outstanding"}
+    assert "2026Q1" in share_quarters, "us-gaap 부재 → dei 최후수단 사용"
 
 
 def test_concept_absent_lenient_passthrough(mocker):
