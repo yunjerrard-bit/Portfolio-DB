@@ -56,3 +56,6 @@ def write_raw_sheet(ws, raw_by_ticker: dict, formats: dict, sorted_tickers=None)
             ws.write_string(row, 6, str(reprt_code) if reprt_code is not None else "-")
             ws.write_string(row, 7, str(unit) if unit is not None else "-")
             row += 1
+
+    # 헤더행만 freeze(D-04 — 원천 시트는 키 컬럼 고정 불필요, A2 부터 스크롤).
+    ws.freeze_panes(1, 0)

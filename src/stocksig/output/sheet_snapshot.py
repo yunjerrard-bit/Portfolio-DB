@@ -23,9 +23,13 @@ _SNAPSHOT_METRICS: list[str] = ["PER", "PEG", "GPM", "OPM", "PBR", "PCR", "PSR",
 # 비율 지표 표기(WARNING-2 — 매트릭스와 동일 규칙).
 _IS_RATIO: dict[str, bool] = {m.name: m.is_ratio_0_1 for m in REGISTRY}
 
+# ROE/ROA 퍼센트 표기(매트릭스와 동일 — display 층에서만 확장, 레지스트리 불변).
+_PERCENT_METRICS: frozenset[str] = frozenset({"ROE", "ROA"})
+
 
 def _format_value_text(metric: str, value: float) -> str:
-    if _IS_RATIO.get(metric, False):
+    # 비율 지표·ROE/ROA 는 퍼센트, 아니면 소수 2자리(매트릭스와 동일 규칙).
+    if _IS_RATIO.get(metric, False) or metric in _PERCENT_METRICS:
         return f"{value * 100:.1f}%"
     return f"{value:.2f}"
 
@@ -69,5 +73,5 @@ def write_snapshot_sheet(ws, snapshot_rows: list[dict], formats: dict) -> None:
             if comment:
                 ws.write_comment(row, col, str(comment))
 
-    # A열만 freeze(D-04 일관).
-    ws.freeze_panes(0, 1)
+    # 헤더행+A열 freeze(D-04 일관 — 헤더행 1행 + A열 고정, B2 부터 스크롤).
+    ws.freeze_panes(1, 1)

@@ -3,7 +3,7 @@
 행 = 종목, 열 = 식별 5열(티커·기업명·시장·티어·산업) + 분기 열(최신 왼쪽 D-01).
 각 분기 셀에 (분기열×산업) 모집단 상대색(D-05/06/07)을 정적 Format 으로 베이킹하고
 전년동기 YoY 글리프(D-08)를 셀 텍스트에 결합한다. 결손/sanity-밖 셀은 "-" + 사유
-코멘트(D-11 — 0/빈칸 sentinel 금지). A열만 freeze(D-04, 헤더행 미고정).
+코멘트(D-11 — 0/빈칸 sentinel 금지). 헤더행+A열 freeze(D-04, 헤더행 고정).
 
 **시트1 비결합(Core Value):** sheet_portfolio `_COL`/`PORTFOLIO_COLUMNS`를 import 하지
 않고 동일 식별열 헤더 리터럴을 트렌드 전용으로 재정의한다(22열 vs 5열+분기열 구조 다름).
@@ -31,6 +31,11 @@ _N_IDENT = len(_IDENT_COLUMNS)
 # 퍼센트(27.0%)로 보이도록 값 텍스트를 포맷한다(저장은 0~1 비율, 신규 산식 아님).
 _IS_RATIO: dict[str, bool] = {m.name: m.is_ratio_0_1 for m in REGISTRY}
 
+# ROE/ROA 는 registry is_ratio_0_1=False(0~1 초과 가능, AAPL ROE 1.151=115.1%)지만
+# 표시상으로는 퍼센트가 직관적이므로 display 층에서만 퍼센트로 확장한다.
+# (레지스트리 플래그는 절대 변경하지 않음 — 산식/의미 불변.)
+_PERCENT_METRICS: frozenset[str] = frozenset({"ROE", "ROA"})
+
 # 식별 열 개별 최소 폭(시장/티어는 짧은 라벨).
 _COL_WIDTHS: dict[str, int] = {
     "티커": 12,
@@ -42,8 +47,8 @@ _COL_WIDTHS: dict[str, int] = {
 
 
 def _format_value_text(metric: str, value: float) -> str:
-    """값 텍스트(WARNING-2): 비율 지표는 퍼센트, 아니면 소수 2자리."""
-    if _IS_RATIO.get(metric, False):
+    """값 텍스트(WARNING-2): 비율 지표·ROE/ROA 는 퍼센트, 아니면 소수 2자리."""
+    if _IS_RATIO.get(metric, False) or metric in _PERCENT_METRICS:
         return f"{value * 100:.1f}%"
     return f"{value:.2f}"
 
@@ -135,5 +140,5 @@ def write_metric_sheet(
             if comment:
                 ws.write_comment(row, col, str(comment))
 
-    # (4) A열만 freeze(D-04 — col 1 부터 스크롤, 헤더행 미고정).
-    ws.freeze_panes(0, 1)
+    # (4) 헤더행+A열 freeze(D-04 — 헤더행 1행 + A열 고정, B2 부터 스크롤).
+    ws.freeze_panes(1, 1)
