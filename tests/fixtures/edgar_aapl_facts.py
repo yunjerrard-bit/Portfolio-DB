@@ -124,6 +124,7 @@ class FakeFinancialFact:
     is_dimensioned: bool = False  # 260701: True=세그먼트(차원) fact → Q4 도출 배제
     dimensions: object | None = None  # 260701: 비차원 총액은 None
     period_length_months: int | None = None  # 260701: by_period_length 필터용(12/9/3)
+    concept: str | None = None  # 260701 커밋3: 정규 concept 선별용('us-gaap:Revenues' 등). None=관대통과
 
     def get_display_period_key(self) -> str:
         return self._display_key

@@ -151,6 +151,39 @@ _EDGAR_SHARES_FALLBACK_CONCEPTS: tuple[str, ...] = (
     "WeightedAverageNumberOfSharesOutstandingBasic",
 )
 
+# 260701(커밋3): 필드별 정규(canonical) us-gaap concept 화이트리스트.
+# by_concept(term) 은 기본 fuzzy 매칭이라 한 (field, 기간)에 총액 외 형제 concept 이
+# 섞여 온다(라이브 확정): Revenue→{Revenues(총액), CostOfRevenue, RevenueNotFromContract…},
+# Liabilities→{Liabilities(총액), LiabilitiesAndStockholdersEquity(=총자산!), LiabilitiesCurrent…},
+# StockholdersEquity→{StockholdersEquity(총액), LiabilitiesAndStockholdersEquity(=총자산!)}.
+# 현행은 전부 append→upsert 마지막-쓰기로 아무거나(쓰레기·음수·엉뚱한 총액) 저장됐다.
+# max-abs 는 total_equity/total_liabilities 에서 LiabilitiesAndStockholdersEquity(더 큼)를
+# 잘못 고르므로 부적합 → 필드별 정규 concept 로 정확 선별(총액만 통과). 값 소스는 로컬
+# concept 명(prefix 제외) 이 이 집합에 속하는 fact. 회사별 상이(revenue: Revenues vs
+# RevenueFromContract…)는 집합에 병기하고 우선순위(순서)로 택한다.
+_FIELD_CANONICAL_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "revenue": (
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+    ),
+    "gross_profit": ("GrossProfit",),
+    "op_income": ("OperatingIncomeLoss",),
+    "net_income": ("NetIncomeLoss",),
+    "eps": ("EarningsPerShareDiluted",),
+    "operating_cash_flow": (
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    ),
+    "total_equity": (
+        "StockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ),
+    "total_liabilities": ("Liabilities",),
+    "total_assets": ("Assets",),
+}
+
 
 def _quarter_key_from_period_end(period_end) -> str | None:
     """fact.period_end(종료일) 월 기준 캘린더 분기 "YYYYQn" 산출. 파싱 실패 시 None.
@@ -304,26 +337,79 @@ def _is_total_fact(fact) -> bool:
     return not dims
 
 
-def _pick_total_by_start(flist: list) -> dict:
-    """비차원 총액 fact 를 period_start 별로 정리 → {period_start: fact}.
+def _local_concept(fact) -> str:
+    """fact.concept 로컬명(prefix 제외). 'us-gaap:Revenues'→'Revenues'. 부재 시 ''."""
+    concept = getattr(fact, "concept", None)
+    if not concept:
+        return ""
+    return str(concept).split(":")[-1]
 
-    같은 회계연도 누계(annual/9M)는 period_start 가 동일하다(라이브 스파이크 확정 —
-    9M 매칭 = period_start 동일). numeric_value 결손 fact 는 제외. 동일 start 중복 시
-    절대값이 큰(총액) fact 유지(세그먼트 잔재 방어).
+
+def _is_canonical(fact, allowed: tuple[str, ...]) -> bool:
+    """fact 의 로컬 concept 이 정규 화이트리스트에 속하는가 (260701 커밋3).
+
+    concept 정보가 없으면(목/부재) 관대 통과 — 실 FinancialFact 는 항상 concept 을
+    제공하므로 실추출에선 엄격 필터(형제 concept 배제)로 동작한다.
+    """
+    local = _local_concept(fact)
+    if not local:
+        return True  # concept 부재 → 관대 통과(목 하위호환)
+    return local in allowed
+
+
+def _canonical_rank(fact, allowed: tuple[str, ...]) -> int:
+    """정규 concept 선호 순위(작을수록 우선). 화이트리스트 순서=선호도. 미매칭/부재=최하위."""
+    local = _local_concept(fact)
+    try:
+        return allowed.index(local)
+    except ValueError:
+        return len(allowed)
+
+
+def _key_period_start(fact) -> str | None:
+    """derive 경로 그룹키 — annual/9M 을 같은 회계연도로 묶는 period_start."""
+    return _iso_or_none(getattr(fact, "period_start", None))
+
+
+def _pick_canonical_by_period(flist: list, allowed: tuple[str, ...], key_fn) -> dict:
+    """비차원 + 정규 concept fact 를 기간키별 단일 총액으로 선별 → {key: fact} (260701 커밋3).
+
+    선택 규칙(각 기간키 그룹 내): (1) 정규 concept 우선순위(_canonical_rank) 낮은 것,
+    (2) 동순위면 filing_date 늦은(=최신 정정) 것. max-abs 는 쓰지 않는다 —
+    total_equity/total_liabilities 에서 LiabilitiesAndStockholdersEquity(=총자산, 더 큼)를
+    오선택하기 때문(화이트리스트가 형제 concept 을 이미 배제하므로 우선순위+최신으로 충분).
+    비차원(_is_total_fact)·정규 concept(_is_canonical)·numeric_value 존재·key 산출 성공만 후보.
     """
     out: dict = {}
+    best: dict = {}  # key -> (rank, filing_date)
     for f in flist:
         if not _is_total_fact(f):
             continue
+        if not _is_canonical(f, allowed):
+            continue
         if getattr(f, "numeric_value", None) is None:
             continue
-        start = _iso_or_none(getattr(f, "period_start", None))
-        if start is None:
+        key = key_fn(f)
+        if key is None:
             continue
-        prev = out.get(start)
-        if prev is None or abs(f.numeric_value) > abs(prev.numeric_value):
-            out[start] = f
+        rank = _canonical_rank(f, allowed)
+        fdate = _iso_or_none(getattr(f, "filing_date", None)) or ""
+        prev = best.get(key)
+        if prev is None or rank < prev[0] or (rank == prev[0] and fdate >= prev[1]):
+            out[key] = f
+            best[key] = (rank, fdate)
     return out
+
+
+def _canonical_facts(flist: list, allowed: tuple[str, ...]) -> list:
+    """비차원 + 정규 concept fact 만 필터(순서 보존, 축약 안 함) (260701 커밋3).
+
+    형제 concept(CostOfRevenue·LiabilitiesAndStockholdersEquity=총자산·sub-line 등)만
+    배제한다. 같은 (quarter,field) 정정 중복은 축약하지 않고 그대로 두어, 상위 `_row_sort_key`
+    오름차순 정렬 + store upsert 마지막-쓰기(최신 filing 승)가 처리하게 한다(기존 계약 보존).
+    numeric_value=None fact 도 유지 — D-05(결손=NULL 행) 표시(3M/instant 방출 경로 전용).
+    """
+    return [f for f in flist if _is_total_fact(f) and _is_canonical(f, allowed)]
 
 
 def _derive_q4_rows(facts, ticker: str, reported_quarters_by_field: dict) -> list[dict]:
@@ -343,8 +429,13 @@ def _derive_q4_rows(facts, ticker: str, reported_quarters_by_field: dict) -> lis
     """
     derived: list[dict] = []
     for concept, field in _EDGAR_Q4_DERIVE_CONCEPTS:
-        annual_by_start = _pick_total_by_start(_query_facts_by_length(facts, concept, 12))
-        nine_by_start = _pick_total_by_start(_query_facts_by_length(facts, concept, 9))
+        allowed = _FIELD_CANONICAL_CONCEPTS[field]
+        annual_by_start = _pick_canonical_by_period(
+            _query_facts_by_length(facts, concept, 12), allowed, _key_period_start
+        )
+        nine_by_start = _pick_canonical_by_period(
+            _query_facts_by_length(facts, concept, 9), allowed, _key_period_start
+        )
         if not annual_by_start or not nine_by_start:
             continue  # annual/9M 부재 → 도출 불가(별건 결손, 자연 처리)
 
@@ -406,10 +497,13 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
     rows: list[dict] = []
 
     # 유량(quarterly 조회 → fact.period_type 은 'duration'). 260629-hec: by_period_type("quarterly").
-    # 260701: as-reported 3M 분기를 field 별로 기록(Q4 도출 시 정상 분기 덮어쓰기 방지).
+    # 260701(커밋3): by_concept fuzzy 매칭이 형제 concept(CostOfRevenue 등)을 섞어 오므로
+    # _pick_canonical_by_period 로 분기별 정규 총액만 단일 선별(현행 append→upsert 임의선택
+    # → 쓰레기값 저장 방지). as-reported 3M 분기를 field 별로 기록(Q4 도출 시 정상 분기 보존).
     reported_quarters_by_field: dict[str, set[str]] = {}
     for concept, field in _EDGAR_DURATION_CONCEPTS:
-        for fact in _query_facts(facts, concept, "quarterly"):
+        allowed = _FIELD_CANONICAL_CONCEPTS[field]
+        for fact in _canonical_facts(_query_facts(facts, concept, "quarterly"), allowed):
             row = _fact_to_row(ticker, field, fact, "duration")
             if row is not None:
                 rows.append(row)
@@ -417,29 +511,39 @@ def fetch_edgar_quarterly_raw(ticker: str) -> list[dict]:
 
     # 저량(instant, BS). 260629-hec(LOCKED FACT 5): by_concept 만으로 조회 후 파이썬에서
     # period_type=='instant' 필터(instant 어휘는 5.35.0 by_period_type 에서 ValidationError).
-    # [A5] concept 결과 비거나 instant 0건 시 헬퍼 fallback.
+    # 260701(커밋3): instant 도 fuzzy 형제(Liabilities→LiabilitiesAndStockholdersEquity=총자산 등)를
+    # 섞으므로 _pick_canonical_by_period 로 분기별 정규 총액만 선별. [A5] 정규 총액 0건 시 헬퍼 fallback.
     for concept, field in _EDGAR_INSTANT_CONCEPTS:
+        allowed = _FIELD_CANONICAL_CONCEPTS[field]
         concept_facts = _query_facts(facts, concept, period_type=None)
         instant_facts = [
             f for f in concept_facts
             if getattr(f, "period_type", None) == "instant"
         ]
-        if not instant_facts:
-            instant_facts = _instant_fallback(facts, field)
-        for fact in instant_facts:
+        canonical = _canonical_facts(instant_facts, allowed)
+        if not canonical:
+            # 정규 총액 0건 → EntityFacts 헬퍼 fallback(단일 스칼라). concept 필터 미적용.
+            for fact in _instant_fallback(facts, field):
+                row = _fact_to_row(ticker, field, fact, "instant")
+                if row is not None:
+                    rows.append(row)
+            continue
+        for fact in canonical:
             row = _fact_to_row(ticker, field, fact, "instant")
             if row is not None:
                 rows.append(row)
 
-    # 발행주식수: facts.shares_outstanding_fact(dei 단일행) 있으면 행 추가.
-    # 260701(커밋2): dei 부재 시 us-gaap 분기별 폴백으로 분기 shares 확보(per-share 분모 복구).
+    # 발행주식수: dei shares_outstanding_fact(있으면) + us-gaap 분기별 폴백을 **항상 병합**.
+    # 260701(커밋3): dei 가 present 여도 종목당 1행뿐인 경우가 많아(AAPL) 분기 커버리지가 없다
+    # → us-gaap 분기별 폴백을 dei 유무와 무관하게 병합해 per-share 분모(EPS_ttm/BPS/SPS/OCF_ps)의
+    # 분기 커버리지를 확보한다. 같은 (quarter, shares_outstanding) 충돌은 _row_sort_key(filing_date)
+    # + upsert 마지막-쓰기로 정합(최신 값 우선).
     shares_fact = getattr(facts, "shares_outstanding_fact", None)
     if shares_fact is not None:
         row = _fact_to_row(ticker, "shares_outstanding", shares_fact, "instant")
         if row is not None:
             rows.append(row)
-    else:
-        rows.extend(_shares_fallback_rows(facts, ticker))
+    rows.extend(_shares_fallback_rows(facts, ticker))
 
     # 260701: Q4 도출 — 손익 유량 concept 의 회계 Q4(=캘린더 갭 분기)를 annual−9M 으로
     # 메운다. as-reported 3M 이 이미 있는 분기는 skip(reported_quarters_by_field 참조).
