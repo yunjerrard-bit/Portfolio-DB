@@ -1,7 +1,9 @@
 # BACKLOG: EDGAR Q4 갭 → US 트렌드 지표 대부분 None (TTM 연속 4분기 불가)
 
-**상태:** 진단 완료 · 수정 보류(별도 세션 인계 — 사용자 결정 2026-06-29)
+**상태:** ✅ 해결 (debug 세션 edgar-q4-gap-ttm-none, 2026-07-02) — 커밋 8ff1c2e·e809320·75a8383·49b2b06·7d7ef17. 상세: `.planning/debug/edgar-q4-gap-ttm-none.md`.
 **우선순위:** 높음 (US 트렌드 시트의 핵심 가치가 여전히 미작동)
+
+> **해결 요약 (2026-07-02):** (1) 추출단계 `Q4=annual−9M` 도출로 EDGAR 회계 Q4 갭 해소 → TTM 복구. (2) fuzzy concept 매칭 오염(CostOfRevenue·LiabilitiesAndStockholdersEquity·sub-line)을 필드별 정규 concept 화이트리스트로 정확 선별. (3) shares us-gaap 분기 폴백 + shares-only 분기 제거로 per-share 분모·최신열 복구. 클린 전수 재적재(raw_facts EDGAR DELETE 후 refetch, ok=125). **최신분기 GPM/OPM/ROE/ROA ≥1 수치 = 97/105(수정 전 ~3), 최근4분기 104/105.** metrics_engine 0줄·Core Value 0-diff. 전 스위트 385 passed. 잔여: OXY(우선주 net-income-to-common 전환) 1종목 net_income 화이트리스트 미스 — 소폭 후속 후보.
 **선행:** quick 260629-hec(by_period_type 마이그레이션 + 전수 재적재) 완료 — raw_facts 는 채워짐. 이 문서는 그 **다음 층** 문제다.
 
 > 자족 핸드오프(콜드 픽업용). edgartools 5.35.0 by_period_type 버그(별건, 해결됨)가 US raw_facts 를 비워 가려져 있던 기존 설계 한계가, 재적재 후 드러났다.
